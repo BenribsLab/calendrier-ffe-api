@@ -51,6 +51,27 @@ Documentation interactive : `/docs`.
 | `GET /calendriers` | Dernière analyse de chaque calendrier PDF (`cde91`, `idf`) |
 | `GET /calendriers/{source}` | Dernière analyse d'un calendrier PDF |
 | `POST /calendriers/{source}/refresh` | Relance l'analyse (en-tête `Authorization: Bearer <CAL_ADMIN_TOKEN>`) |
+| `POST /calendriers/{source}/cibles/{cible}` | Remplace un calendrier par un fichier déposé (`fichier`) ou un lien web (`lien`), formulaire multipart, jeton requis |
+| `DELETE /calendriers/{source}/cibles/{cible}` | Revient au calendrier publié sur le site (jeton requis) |
+| `GET /calendriers/{source}/fichiers/{fichier}` | Calendrier PDF archivé (dont les fichiers déposés) |
+
+### Remplacer un calendrier à la main
+
+Cibles : `cde91/cde91` (calendrier du CDE 91), `idf/fleuret`, `idf/epee`, `idf/sabre` (calendriers de la Ligue).
+
+- Chaque cible est indépendante : remplacer le fleuret ne touche pas l'épée.
+- Le nouveau calendrier est analysé **avant** d'écraser l'ancien : s'il ne contient aucune compétition pour la cible
+  (ex. un calendrier épée déposé pour le fleuret), il est refusé et rien ne change.
+- Le remplacement reste en place, même après l'analyse quotidienne, jusqu'au `DELETE` (retour au site).
+  Il est enregistré dans `data/<source>/manuel.json` ; le fichier déposé est archivé dans `data/<source>/pdf/`.
+- Chaque compétition donne dans `calendriers` le(s) calendrier(s) qui la mentionnent, avec leur lien :
+  le fichier déposé (servi par l'API), le lien web saisi, ou le calendrier du site.
+
+```bash
+curl -X POST -H "Authorization: Bearer $JETON" -F "fichier=@Calendrier-Fleuret.pdf" https://calendrier-ffe.benribs.fr/calendriers/idf/cibles/fleuret
+curl -X POST -H "Authorization: Bearer $JETON" -F "lien=https://…/Fleuret.pdf" https://calendrier-ffe.benribs.fr/calendriers/idf/cibles/fleuret
+curl -X DELETE -H "Authorization: Bearer $JETON" https://calendrier-ffe.benribs.fr/calendriers/idf/cibles/fleuret
+```
 
 Filtres (tous facultatifs, listes séparées par des virgules) :
 

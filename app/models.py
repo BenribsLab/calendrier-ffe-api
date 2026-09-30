@@ -24,6 +24,12 @@ ECHELONS = {
 }
 
 
+class LienCalendrier(BaseModel):
+    source: str
+    libelle: str
+    url: str = Field(description="Calendrier du site, fichier déposé (servi par l'API) ou lien web saisi")
+
+
 class Competition(BaseModel):
     id: str
     sources: list[str]
@@ -42,6 +48,7 @@ class Competition(BaseModel):
     horaire: str | None = None
     url: str | None = Field(None, description="Fiche FFE ou PDF du CDE")
     note_url: str | None = Field(None, description="Lien vers la note d'organisation (redirige vers la fiche si non publiée)")
+    calendriers: list[LienCalendrier] = Field(default_factory=list, description="Calendriers PDF (CDE 91, Ligue) qui la mentionnent")
 
 
 class CompetitionDetail(Competition):

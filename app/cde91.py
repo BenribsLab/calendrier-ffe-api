@@ -13,7 +13,7 @@ from urllib.parse import urljoin
 import pdfplumber
 from selectolax.parser import HTMLParser
 
-from .calendriers import Document, Evenement, dedoublonner, saison_en_cours, slug
+from .calendriers import Cible, Document, Evenement, dedoublonner, saison_en_cours, slug
 from .text import categories as extraire_categories
 from .text import espaces, mois, sans_accents
 
@@ -22,6 +22,9 @@ log = logging.getLogger(__name__)
 NOM = "cde91"
 LIBELLE = "Calendrier CDE 91"
 VERSION_ANALYSE = 4  # à incrémenter à chaque changement de l'analyse
+
+# Remplacement manuel : un seul calendrier, qui remplace tous les PDF de la page du CDE.
+CIBLES = [Cible("cde91", "Calendrier CDE 91", lambda document: True)]
 
 ARMES_TEXTE = {"FLEURET": "FLE", "EPEE": "EPE", "SABRE": "SAB", "LASER": "LAS", "ARTISTIQUE": "ART"}
 

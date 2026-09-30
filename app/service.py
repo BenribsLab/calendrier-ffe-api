@@ -16,7 +16,7 @@ from .calendriers import LIEU_INDETERMINE, CalendrierPDF, Evenement, lieu_connu,
 from .config import Settings
 from .ffe import ClientFFE, FicheFFE, Filtres, LigneFFE, jeton_depuis_id, type_et_echelon
 from .geo import Geolocalisation
-from .models import ARMES, Competition, CompetitionDetail, CompetitionList, SourceStatus
+from .models import ARMES, Competition, CompetitionDetail, CompetitionList, LienCalendrier, SourceStatus
 from .text import cle_ville, sans_accents
 
 log = logging.getLogger(__name__)
@@ -32,6 +32,14 @@ _DEPARTEMENTS_TITRE = re.compile(r"(?:\s-\s*|\()\s*(\d{2,3}[AB]?(?:\s*-\s*\d{2,3
 def departements_du_titre(titre: str) -> list[str]:
     m = _DEPARTEMENTS_TITRE.search(titre)
     return re.findall(r"\d{2,3}[AB]?", m.group(1).upper()) if m else []
+
+
+def lien_calendrier(source: str, e: Evenement) -> LienCalendrier:
+    """Calendrier d'où vient l'événement : « Calendrier Ligue IDF – Fleuret », « Calendrier CDE 91 »."""
+    libelle = LIBELLES[source]
+    if source == "idf" and len(e.armes) == 1:
+        libelle = f"{libelle} – {ARMES.get(e.armes[0], e.armes[0])}"
+    return LienCalendrier(source=source, libelle=libelle, url=e.pdf_url)
 
 
 def lieu_ffe(lieu: str) -> str:
@@ -66,7 +74,10 @@ def eclater(c: Competition) -> list[Competition]:
     """Une compétition par arme."""
     if len(c.armes) <= 1:
         return [c]
-    return [c.model_copy(update={"id": id_arme(c.id, a), "armes": [a], "sources": list(c.sources)}) for a in c.armes]
+    return [
+        c.model_copy(update={"id": id_arme(c.id, a), "armes": [a], "sources": list(c.sources), "calendriers": list(c.calendriers)})
+        for a in c.armes
+    ]
 
 
 def eclater_evenement(e: Evenement) -> list[Evenement]:
@@ -131,6 +142,7 @@ class Service:
             echelon="departemental" if source == "cde91" else idf.echelon(e.titre),
             horaire=e.horaire,
             url=e.pdf_url,
+            calendriers=[lien_calendrier(source, e)],
         )
 
     def _fusionner(self, c: Competition, source: str, e: Evenement) -> None:
@@ -138,6 +150,9 @@ class Service:
         Le nom du CDE fait référence (un 'Tournoi' FFE qui est un 'Challenge de Référence' du CDE reste un CR)."""
         if source not in c.sources:
             c.sources.append(source)
+        lien = lien_calendrier(source, e)
+        if lien not in c.calendriers:
+            c.calendriers.append(lien)
         if source == "cde91":
             c.titre = e.titre
         if source == "idf" and not c.region:

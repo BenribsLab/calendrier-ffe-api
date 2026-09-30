@@ -6,9 +6,9 @@ from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from . import ics
 from . import cde91, idf
@@ -61,10 +61,12 @@ def creer_app(
                     cde91.NOM: CalendrierPDF(
                         cde91.NOM, cde91.LIBELLE, http, settings.cde91_page_url, settings.data_dir,
                         cde91.liens_pdf, cde91.analyser_pdf, cde91.VERSION_ANALYSE,
+                        cibles=cde91.CIBLES, url_publique=settings.public_url,
                     ),
                     idf.NOM: CalendrierPDF(
                         idf.NOM, idf.LIBELLE, http, settings.idf_page_url, settings.data_dir,
                         idf.liens_calendriers, idf.analyser_pdf, idf.VERSION_ANALYSE,
+                        cibles=idf.CIBLES, url_publique=settings.public_url,
                     ),
                 },
                 Geolocalisation(http, settings.geo_api_url, settings.data_dir, settings.geo_concurrency),
@@ -86,7 +88,7 @@ def creer_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[o.strip() for o in settings.cors_origins.split(",")],
-        allow_methods=["GET", "POST"],  # POST : relance des calendriers PDF (protégée par jeton)
+        allow_methods=["GET", "POST", "DELETE"],  # POST / DELETE : administration des calendriers (jeton)
         allow_headers=["*"],
     )
 
@@ -212,6 +214,7 @@ def creer_app(
             "version_analyse": etat.version,
             "pdfs": etat.pdfs,
             "nb_evenements": len(etat.evenements),
+            "cibles": cal.etat_cibles(),
         }
 
     @app.get("/calendriers", tags=["Calendriers PDF"])
@@ -234,6 +237,48 @@ def creer_app(
         """Force une nouvelle analyse d'un calendrier PDF (en-tête Authorization: Bearer <CAL_ADMIN_TOKEN>)."""
         await cal.rafraichir(forcer=True)
         return etat_calendrier(cal)
+
+    @app.post("/calendriers/{source}/cibles/{cible}", tags=["Calendriers PDF"], dependencies=[Depends(admin)])
+    async def calendrier_remplacer(
+        cible: str,
+        fichier: UploadFile | None = File(None, description="Calendrier PDF à déposer"),
+        lien: str | None = Form(None, description="…ou lien web vers le calendrier PDF"),
+        cal: CalendrierPDF = Depends(calendrier),
+    ):
+        """Remplace un calendrier (CDE 91 : `cde91` ; Ligue : `fleuret`, `epee`, `sabre`) par un fichier déposé ou un
+        lien web. N'écrase que cette cible. Le calendrier est analysé avant : s'il ne contient aucune compétition
+        reconnue pour la cible, il est refusé et l'ancien est conservé. Reste en place jusqu'au DELETE."""
+        if cible not in cal.cibles:
+            raise HTTPException(404, f"Cible inconnue. Valeurs : {', '.join(cal.cibles)}")
+        if (fichier is None) == (not lien):
+            raise HTTPException(422, "Donner soit un fichier, soit un lien (et pas les deux)")
+        try:
+            if fichier is not None:
+                bilan = await cal.remplacer(cible, contenu=await fichier.read(), nom=fichier.filename or "calendrier.pdf")
+            else:
+                bilan = await cal.remplacer(cible, lien=lien.strip())
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"Lien injoignable : {exc}")
+        return {**bilan, **etat_calendrier(cal)}
+
+    @app.delete("/calendriers/{source}/cibles/{cible}", tags=["Calendriers PDF"], dependencies=[Depends(admin)])
+    async def calendrier_retablir(cible: str, cal: CalendrierPDF = Depends(calendrier)):
+        """Annule le remplacement manuel d'une cible : on revient au calendrier publié sur le site."""
+        if cible not in cal.cibles:
+            raise HTTPException(404, f"Cible inconnue. Valeurs : {', '.join(cal.cibles)}")
+        await cal.retirer_remplacement(cible)
+        return etat_calendrier(cal)
+
+    @app.get("/calendriers/{source}/fichiers/{fichier}", tags=["Calendriers PDF"], response_class=FileResponse)
+    async def calendrier_fichier(fichier: str, cal: CalendrierPDF = Depends(calendrier)):
+        """Calendrier PDF archivé (dont les fichiers déposés à la main)."""
+        chemin = cal.chemin_fichier(fichier)
+        if chemin is None:
+            raise HTTPException(404, "Fichier introuvable")
+        return FileResponse(chemin, media_type="application/pdf", filename=fichier.split("_", 1)[-1],
+                            content_disposition_type="inline")
 
     return app
 

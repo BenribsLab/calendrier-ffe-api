@@ -36,6 +36,10 @@ def reseau(appels: list[str]):
             return httpx.Response(200, content=(FIXTURES / "cde91_calendrier.pdf").read_bytes())
         if url.host == "cde91.fr":
             return httpx.Response(200, text=(FIXTURES / "cde91_page.html").read_text(encoding="utf-8"))
+        if url.host == "exemple.fr" and url.path.endswith(".pdf"):
+            return httpx.Response(200, content=(FIXTURES / "idf_calendrier.pdf").read_bytes())
+        if url.host == "exemple.fr":
+            return httpx.Response(200, text="<html>pas un pdf</html>")
         if url.host == "escrime-iledefrance.fr" and url.path.endswith(".pdf"):
             return httpx.Response(200, content=(FIXTURES / "idf_calendrier.pdf").read_bytes())
         if url.host == "escrime-iledefrance.fr":
@@ -204,3 +208,90 @@ def test_ligue_idf(client):
     exclues = [c for c in fleuret if "(78-92-95)" in c["titre"]]
     assert exclues and not any(c["officielle"] for c in exclues)
     assert all(c["officielle"] for c in fleuret if "(77-91-94)" in c["titre"])
+
+
+# --- Remplacement manuel des calendriers -----------------------------------------------------
+
+JETON = {"Authorization": "Bearer secret"}
+
+
+def _evenements(client, arme):
+    return [c for c in client.get("/competitions", params={"source": "idf", "arme": arme}).json()["competitions"]]
+
+
+def _cible(client, source, code):
+    return next(c for c in client.get(f"/calendriers/{source}").json()["cibles"] if c["cible"] == code)
+
+
+def test_cibles(client):
+    assert [c["cible"] for c in client.get("/calendriers/idf").json()["cibles"]] == ["fleuret", "epee", "sabre"]
+    assert [c["cible"] for c in client.get("/calendriers/cde91").json()["cibles"]] == ["cde91"]
+    assert _cible(client, "idf", "fleuret")["mode"] == "site"
+
+
+def test_remplacer_par_fichier(client):
+    epee_avant = {(c["id"], c["url"]) for c in _evenements(client, "EPE")}
+    pdf = (FIXTURES / "idf_calendrier.pdf").read_bytes()
+    r = client.post("/calendriers/idf/cibles/fleuret", headers=JETON,
+                    files={"fichier": ("Fleuret IDF 26-27.pdf", pdf, "application/pdf")})
+    assert r.status_code == 200, r.text
+    assert r.json()["nb_evenements"] > 40
+    cible = _cible(client, "idf", "fleuret")
+    assert cible["mode"] == "fichier" and cible["calendriers"][0]["nom"] == "Fleuret IDF 26-27.pdf"
+    # Les compétitions fleuret renvoient vers le fichier déposé, servi par l'API
+    urls = {c["url"] for c in _evenements(client, "FLE")}
+    assert len(urls) == 1 and urls.pop().startswith("https://api.test/calendriers/idf/fichiers/")
+    fichier = cible["calendriers"][0]["url"].rsplit("/", 1)[1]
+    servi = client.get(f"/calendriers/idf/fichiers/{fichier}")
+    assert servi.status_code == 200 and servi.headers["content-type"] == "application/pdf" and servi.content == pdf
+    # L'épée n'a pas bougé
+    assert {(c["id"], c["url"]) for c in _evenements(client, "EPE")} == epee_avant
+    assert _cible(client, "idf", "epee")["mode"] == "site"
+
+
+def test_remplacer_par_lien_et_persistance(client):
+    lien = "https://exemple.fr/calendriers/sabre.pdf"
+    r = client.post("/calendriers/idf/cibles/sabre", headers=JETON, data={"lien": lien})
+    assert r.status_code == 200, r.text
+    assert _cible(client, "idf", "sabre")["mode"] == "lien"
+    assert {c["url"] for c in _evenements(client, "SAB")} == {lien}
+    # L'analyse quotidienne ne l'écrase pas
+    client.post("/calendriers/idf/refresh", headers=JETON)
+    assert {c["url"] for c in _evenements(client, "SAB")} == {lien}
+    assert _cible(client, "idf", "sabre")["mode"] == "lien"
+    # Le lien du calendrier est aussi donné sur une compétition fusionnée avec la FFE
+    toutes = client.get("/competitions", params={"arme": "SAB"}).json()["competitions"]
+    fusion = [c for c in toutes if set(c["sources"]) >= {"ffe", "idf"}]
+    assert fusion and all({"source": "idf", "libelle": "Calendrier Ligue IDF – Sabre", "url": lien} in c["calendriers"] for c in fusion)
+    # Retour au calendrier du site
+    r = client.delete("/calendriers/idf/cibles/sabre", headers=JETON)
+    assert r.status_code == 200
+    assert _cible(client, "idf", "sabre")["mode"] == "site"
+    assert lien not in {c["url"] for c in _evenements(client, "SAB")}
+
+
+def test_remplacer_refuse_sans_rien_changer(client):
+    avant = client.get("/calendriers/idf").json()
+    # Le calendrier du CDE ne contient pas de page « Fleuret » de la Ligue : refusé
+    r = client.post("/calendriers/idf/cibles/fleuret", headers=JETON,
+                    files={"fichier": ("cde.pdf", (FIXTURES / "cde91_calendrier.pdf").read_bytes(), "application/pdf")})
+    assert r.status_code == 422 and "Aucune compétition" in r.json()["detail"]
+    # Pas un PDF, lien qui ne renvoie pas un PDF, rien de fourni, jeton absent, cible inconnue
+    assert client.post("/calendriers/idf/cibles/fleuret", headers=JETON,
+                       files={"fichier": ("x.pdf", b"bonjour", "application/pdf")}).status_code == 422
+    assert client.post("/calendriers/idf/cibles/fleuret", headers=JETON, data={"lien": "https://exemple.fr/page"}).status_code == 422
+    assert client.post("/calendriers/idf/cibles/fleuret", headers=JETON).status_code == 422
+    assert client.post("/calendriers/idf/cibles/fleuret", data={"lien": "https://exemple.fr/a.pdf"}).status_code == 401
+    assert client.post("/calendriers/idf/cibles/fleurette", headers=JETON, data={"lien": "https://exemple.fr/a.pdf"}).status_code == 404
+    apres = client.get("/calendriers/idf").json()
+    assert apres["cibles"] == avant["cibles"] and apres["nb_evenements"] == avant["nb_evenements"]
+
+
+def test_remplacer_cde91(client):
+    pdf = (FIXTURES / "cde91_calendrier.pdf").read_bytes()
+    r = client.post("/calendriers/cde91/cibles/cde91", headers=JETON,
+                    files={"fichier": ("Calendrier CDE 91 v3.pdf", pdf, "application/pdf")})
+    assert r.status_code == 200 and r.json()["nb_evenements"] == 9
+    cde = client.get("/competitions", params={"source": "cde91"}).json()["competitions"]
+    assert all(c["calendriers"][0]["url"].startswith("https://api.test/calendriers/cde91/fichiers/") for c in cde)
+    assert client.get("/calendriers/cde91/fichiers/..%2Fetat.json").status_code == 404

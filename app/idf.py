@@ -21,7 +21,7 @@ from urllib.parse import urljoin
 import pdfplumber
 from selectolax.parser import HTMLParser
 
-from .calendriers import Document, Evenement, dedoublonner, saison_en_cours, slug
+from .calendriers import Cible, Document, Evenement, dedoublonner, saison_en_cours, slug
 from .cde91 import armes as armes_du_texte
 from .models import CATEGORIES
 from .text import categories as extraire_categories
@@ -32,6 +32,23 @@ log = logging.getLogger(__name__)
 NOM = "idf"
 LIBELLE = "Calendrier Ligue IDF"
 VERSION_ANALYSE = 3  # à incrémenter à chaque changement de l'analyse
+
+
+def est_m13(libelle: str) -> bool:
+    return bool(re.search(r"\bM\s*13\b", libelle, re.IGNORECASE))
+
+
+def _lien_de_l_arme(arme: str):
+    """Liens du site remplacés par un calendrier manuel de cette arme (pas les calendriers M13)."""
+    return lambda document: armes_du_texte(document.libelle) == [arme] and not est_m13(document.libelle)
+
+
+# Remplacement manuel : un calendrier par arme, indépendants (remplacer le fleuret ne touche pas l'épée).
+CIBLES = [
+    Cible("fleuret", "Calendrier IDF Fleuret", _lien_de_l_arme("FLE")),
+    Cible("epee", "Calendrier IDF Epée", _lien_de_l_arme("EPE")),
+    Cible("sabre", "Calendrier IDF Sabre", _lien_de_l_arme("SAB")),
+]
 
 
 def liens_calendriers(html: str, page_url: str) -> list[Document]:
@@ -326,7 +343,7 @@ def analyser_pdf(contenu: bytes, document: Document) -> list[Evenement]:
     if not contenu.startswith(b"%PDF"):
         raise ValueError(f"Format non pris en charge (PDF attendu) : {document.url}")
     arme_du_lien = armes_du_texte(document.libelle)
-    m13 = bool(re.search(r"\bM\s*13\b", document.libelle, re.IGNORECASE))
+    m13 = est_m13(document.libelle)
     evenements: list[Evenement] = []
     with pdfplumber.open(io.BytesIO(contenu)) as pdf:
         for page in pdf.pages:
