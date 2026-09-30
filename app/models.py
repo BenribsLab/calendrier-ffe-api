@@ -37,6 +37,9 @@ class Competition(BaseModel):
     lieu: str
     departement: str | None = None  # code INSEE, ex. "91"
     region: str | None = None  # code INSEE, ex. "11" (Île-de-France)
+    latitude: float | None = Field(None, description="Centre de la commune du lieu")
+    longitude: float | None = None
+    distance_km: float | None = Field(None, description="Distance à vol d'oiseau du point de départ (filtre de distance)")
     date_debut: date
     date_fin: date
     armes: list[str] = Field(description="Codes : " + ", ".join(ARMES))
@@ -63,8 +66,17 @@ class SourceStatus(BaseModel):
     message: str | None = None
 
 
+class PointDepart(BaseModel):
+    nom: str | None = Field(None, description="Commune saisie, ou vide pour une position GPS")
+    latitude: float
+    longitude: float
+    rayon_km: float | None = None
+
+
 class CompetitionList(BaseModel):
     count: int
     generated_at: datetime
     sources: dict[str, SourceStatus]
+    depart: PointDepart | None = Field(None, description="Point de départ du filtre de distance")
+    sans_position: int = Field(0, description="Compétitions écartées par le filtre de distance faute de lieu connu")
     competitions: list[Competition]

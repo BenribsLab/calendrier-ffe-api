@@ -16,7 +16,7 @@ from .calendriers import CalendrierPDF
 from .config import Settings, get_settings
 from .ffe import ClientFFE
 from .geo import Geolocalisation
-from .models import ARMES, CATEGORIES, CompetitionDetail, CompetitionList
+from .models import ARMES, CATEGORIES, CompetitionDetail, CompetitionList, PointDepart
 from .service import SOURCES, Recherche, Service, liste_parametre
 
 log = logging.getLogger("calendrier_ffe")
@@ -95,7 +95,7 @@ def creer_app(
     def service(request: Request) -> Service:
         return request.app.state.service
 
-    def recherche(
+    async def recherche(
         source: str | None = Query(None, description="ffe,cde91,idf"),
         arme: str | None = Query(None, description="Codes séparés par des virgules : " + ",".join(ARMES)),
         categorie: str | None = Query(None, description=",".join(CATEGORIES)),
@@ -111,6 +111,11 @@ def creer_app(
             description="Compétitions officielles uniquement : tout le CDE 91 ; épreuves, championnats et H2036 "
             "en Île-de-France ; circuits nationaux et championnats de France partout",
         ),
+        pres_de: str | None = Query(None, description="Filtre de distance : commune de départ (ex. Savigny-sur-Orge)"),
+        lat: float | None = Query(None, ge=-90, le=90, description="…ou position de départ (latitude)"),
+        lon: float | None = Query(None, ge=-180, le=180, description="…et longitude"),
+        rayon: float | None = Query(None, gt=0, le=2000, description="Distance maximale en km, à vol d'oiseau"),
+        s: Service = Depends(service),
     ) -> Recherche:
         sources = liste_parametre(source or settings.default_sources, majuscules=False)
         inconnues = set(sources) - set(SOURCES)
@@ -124,6 +129,21 @@ def creer_app(
             raise HTTPException(422, f"Catégorie(s) inconnue(s). Codes valides : {', '.join(CATEGORIES)}")
         if date_debut and date_fin and date_fin < date_debut:
             raise HTTPException(422, "date_fin est antérieure à date_debut")
+        depart = None
+        if (lat is None) != (lon is None):
+            raise HTTPException(422, "Donner lat ET lon")
+        if lat is not None:
+            depart = PointDepart(latitude=lat, longitude=lon, rayon_km=rayon)
+        elif pres_de and pres_de.strip():
+            try:
+                commune = await s.geo.commune(pres_de.strip())
+            except httpx.HTTPError as exc:
+                raise HTTPException(502, f"Recherche de la commune impossible : {exc}")
+            if not commune:
+                raise HTTPException(422, f"Commune inconnue : {pres_de}")
+            depart = PointDepart(nom=commune["nom"], latitude=commune["lat"], longitude=commune["lon"], rayon_km=rayon)
+        elif rayon is not None:
+            raise HTTPException(422, "Le rayon demande un point de départ (pres_de, ou lat et lon)")
         return Recherche(
             armes=armes,
             categories=categories,
@@ -136,6 +156,7 @@ def creer_app(
             departements=liste_parametre(departement),
             regions=liste_parametre(region),
             officielle=officielle,
+            depart=depart,
         )
 
     @app.get("/health", include_in_schema=False)

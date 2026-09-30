@@ -15,8 +15,8 @@ from .cache import CacheTTL
 from .calendriers import LIEU_INDETERMINE, CalendrierPDF, Evenement, lieu_connu, meme_evenement
 from .config import Settings
 from .ffe import ClientFFE, FicheFFE, Filtres, LigneFFE, jeton_depuis_id, type_et_echelon
-from .geo import Geolocalisation
-from .models import ARMES, Competition, CompetitionDetail, CompetitionList, LienCalendrier, SourceStatus
+from .geo import Geolocalisation, distance_km
+from .models import ARMES, Competition, CompetitionDetail, CompetitionList, LienCalendrier, PointDepart, SourceStatus
 from .text import cle_ville, sans_accents
 
 log = logging.getLogger(__name__)
@@ -92,6 +92,7 @@ class Recherche(Filtres):
     departements: list[str] = field(default_factory=list)  # codes INSEE
     regions: list[str] = field(default_factory=list)  # codes INSEE
     officielle: bool = False
+    depart: PointDepart | None = None  # filtre de distance : point de départ et rayon (km)
 
 
 class Service:
@@ -241,11 +242,21 @@ class Service:
                 c for c in competitions
                 if (r.departements and c.departement in r.departements) or (r.regions and c.region in r.regions)
             ]
+        sans_position = 0
+        if r.depart:
+            for c in competitions:
+                if c.latitude is not None and c.longitude is not None:
+                    c.distance_km = round(distance_km(r.depart.latitude, r.depart.longitude, c.latitude, c.longitude), 1)
+            if r.depart.rayon_km is not None:
+                sans_position = sum(1 for c in competitions if c.distance_km is None)
+                competitions = [c for c in competitions if c.distance_km is not None and c.distance_km <= r.depart.rayon_km]
         competitions.sort(key=lambda c: (c.date_debut, c.date_fin, c.lieu, c.titre, c.armes))
         return CompetitionList(
             count=len(competitions),
             generated_at=datetime.now(timezone.utc),
             sources=statuts,
+            depart=r.depart,
+            sans_position=sans_position,
             competitions=competitions,
         )
 
@@ -301,6 +312,7 @@ class Service:
                 info = geo.get(c.lieu)
                 if info:
                     c.departement, c.region = info.get("departement"), info.get("region")
+                    c.latitude, c.longitude = info.get("lat"), info.get("lon")
                 elif source in defauts:
                     c.departement, c.region = defauts[source]
 

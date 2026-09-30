@@ -9,17 +9,18 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.main import creer_app
 from app.service import departements_du_titre
+from app.text import cle_ville
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+# Clé normalisée (cle_ville) -> (nom, département, région, latitude, longitude)
 COMMUNES = {
-    "SAVIGNY-SUR-ORGE": ("Savigny-sur-Orge", "91", "11"),
-    "SAVIGNY S/ ORGE": ("Savigny-sur-Orge", "91", "11"),
-    "SAVIGNY": ("Savigny-sur-Orge", "91", "11"),
-    "MENNECY": ("Mennecy", "91", "11"),
-    "CHILLY MAZARIN": ("Chilly-Mazarin", "91", "11"),
-    "ETAMPES": ("Étampes", "91", "11"),
-    "MASSY": ("Massy", "91", "11"),
+    "SAVIGNYSURORGE": ("Savigny-sur-Orge", "91", "11", 48.6851, 2.3493),
+    "SAVIGNY": ("Savigny-sur-Orge", "91", "11", 48.6851, 2.3493),
+    "MENNECY": ("Mennecy", "91", "11", 48.5660, 2.4370),
+    "CHILLYMAZARIN": ("Chilly-Mazarin", "91", "11", 48.7020, 2.3120),
+    "ETAMPES": ("Étampes", "91", "11", 48.4350, 2.1610),
+    "MASSY": ("Massy", "91", "11", 48.7300, 2.2760),
 }
 
 
@@ -49,8 +50,11 @@ def reseau(appels: list[str]):
         if url.host == "geo.api.gouv.fr" and url.path == "/departements":
             return httpx.Response(200, json=[{"nom": "Essonne", "code": "91", "codeRegion": "11"}])
         if url.host == "geo.api.gouv.fr":
-            c = COMMUNES.get(url.params["nom"])
-            return httpx.Response(200, json=[{"nom": c[0], "codeDepartement": c[1], "codeRegion": c[2]}] if c else [])
+            c = COMMUNES.get(cle_ville(url.params["nom"]))
+            return httpx.Response(200, json=[{
+                "nom": c[0], "codeDepartement": c[1], "codeRegion": c[2],
+                "centre": {"type": "Point", "coordinates": [c[4], c[3]]},
+            }] if c else [])
         return httpx.Response(404)
 
     return httpx.MockTransport(repondre)
@@ -315,3 +319,39 @@ def test_adresse_des_fichiers_suit_cal_public_url(tmp_path):
         assert len(urls) == 1 and urls.pop().startswith("https://api.exemple.fr/calendriers/idf/fichiers/")
         cible = _cible(c, "idf", "fleuret")
         assert cible["calendriers"][0]["url"].startswith("https://api.exemple.fr/")
+
+
+
+# --- Filtre de distance ------------------------------------------------------------------
+
+
+def test_distance_depuis_une_commune(client):
+    d = client.get("/competitions", params={"pres_de": "savigny sur orge", "rayon": 10}).json()
+    assert d["depart"]["nom"] == "Savigny-sur-Orge" and d["depart"]["rayon_km"] == 10
+    assert d["count"] > 0
+    assert all(c["distance_km"] is not None and c["distance_km"] <= 10 for c in d["competitions"])
+    lieux = {c["lieu"] for c in d["competitions"]}
+    assert "SAVIGNY-SUR-ORGE" in lieux and not any("ETAMPES" in l.upper() for l in lieux)  # Étampes ~30 km
+    assert d["sans_position"] > 0  # lieux inconnus (ex. villes non géolocalisées dans ce test) : écartés et comptés
+    # Rayon plus large : Étampes apparaît
+    large = client.get("/competitions", params={"pres_de": "Savigny-sur-Orge", "rayon": 40}).json()
+    assert any("ETAMPES" in c["lieu"].upper() for c in large["competitions"])
+
+
+def test_distance_depuis_une_position(client):
+    d = client.get("/competitions", params={"lat": 48.685, "lon": 2.349, "rayon": 2, "source": "cde91"}).json()  # Chilly-Mazarin : ~3 km
+    assert d["depart"]["nom"] is None
+    assert {c["lieu"] for c in d["competitions"]} == {"SAVIGNY S/ ORGE", "SAVIGNY"}
+    # Sans rayon : la distance est donnée, rien n'est filtré
+    tout = client.get("/competitions", params={"lat": 48.685, "lon": 2.349, "source": "cde91"}).json()
+    assert tout["count"] == 11 and all(c["distance_km"] is not None for c in tout["competitions"])  # 9 lignes, JNA = 3 armes
+    # Le flux .ics accepte le même filtre
+    ics = client.get("/competitions.ics", params={"lat": 48.685, "lon": 2.349, "rayon": 2, "source": "cde91"})
+    assert ics.text.count("BEGIN:VEVENT") == 2
+
+
+def test_distance_erreurs(client):
+    assert client.get("/competitions", params={"rayon": 10}).status_code == 422
+    assert client.get("/competitions", params={"pres_de": "Nullepart-sur-Rien", "rayon": 10}).status_code == 422
+    assert client.get("/competitions", params={"lat": 48.6, "rayon": 10}).status_code == 422
+    assert client.get("/competitions", params={"lat": 120, "lon": 2, "rayon": 10}).status_code == 422

@@ -87,6 +87,14 @@ Filtres (tous facultatifs, listes séparées par des virgules) :
 | `date_debut`, `date_fin` | `2026-11-01` | garde les compétitions qui chevauchent la période |
 | `equipe` | `individuel` / `equipe` | FFE uniquement |
 | `officielle` | `true` | compétitions officielles uniquement (voir ci-dessous) |
+| `pres_de` | `Savigny-sur-Orge` | point de départ du filtre de distance : une commune… |
+| `lat`, `lon` | `48.685`, `2.349` | …ou une position (ex. celle du navigateur) |
+| `rayon` | `30` | distance maximale en km, à vol d'oiseau (demande `pres_de` ou `lat`/`lon`) |
+
+**Distance** : chaque compétition a les coordonnées du centre de la commune de son lieu (`latitude`, `longitude`,
+via geo.api.gouv.fr, gratuit et sans clé). Avec un point de départ, chaque compétition reçoit `distance_km` ;
+avec un `rayon`, seules celles à cette distance ou moins sont gardées. Celles dont le lieu est inconnu
+(« Lieu indéterminé », villes étrangères) sont alors écartées et comptées dans `sans_position`.
 
 **Compétitions officielles** (`officielle=true`, champ `officielle` dans chaque réponse) :
 - tout le calendrier de la Ligue d'Île-de-France (sauf ce qui est réservé à d'autres départements, ex. « 1/8 finale Fête des Jeunes (78-92-95) ») ;

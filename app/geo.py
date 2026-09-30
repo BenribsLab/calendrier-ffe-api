@@ -1,14 +1,16 @@
-"""Département / région d'une ville, via geo.api.gouv.fr.
+"""Département, région et coordonnées (centre de la commune) d'une ville, via geo.api.gouv.fr.
 
 La FFE ne donne que le nom de la ville et ses filtres région/département n'ont aucun effet :
 on géolocalise nous-mêmes. Résultats mis en cache sur disque (une ville ne change pas de département).
+Les coordonnées servent au filtre de distance (« à moins de X km de … », à vol d'oiseau).
 Des corrections manuelles peuvent être ajoutées dans <data_dir>/geo_corrections.json :
-    {"CHILLY MAZARIN": {"departement": "91", "region": "11"}}
+    {"CHILLY MAZARIN": {"departement": "91", "region": "11", "lat": 48.70, "lon": 2.31}}
 """
 
 import asyncio
 import json
 import logging
+import math
 import time
 from pathlib import Path
 
@@ -19,6 +21,27 @@ from .text import cle_ville, nom_developpe, sans_accents
 log = logging.getLogger(__name__)
 
 NON_TROUVE_RETENTE = 7 * 86400  # on retente une ville inconnue au bout d'une semaine
+CHAMPS = "nom,codeDepartement,codeRegion,centre"
+
+
+def distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distance à vol d'oiseau (formule de haversine)."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * 6371.0 * math.asin(math.sqrt(a))
+
+
+def _entree(commune: dict | None) -> dict:
+    centre = ((commune or {}).get("centre") or {}).get("coordinates") or [None, None]
+    return {
+        "nom": commune["nom"] if commune else None,
+        "departement": commune.get("codeDepartement") if commune else None,
+        "region": commune.get("codeRegion") if commune else None,
+        "lat": centre[1],
+        "lon": centre[0],
+        "t": int(time.time()),
+    }
 
 
 class Geolocalisation:
@@ -74,12 +97,16 @@ class Geolocalisation:
 
     def _a_chercher(self, cle: str) -> bool:
         entree = self._cache.get(cle)
-        return entree is None or (not entree.get("departement") and time.time() - entree.get("t", 0) > NON_TROUVE_RETENTE)
+        if entree is None:
+            return True
+        if entree.get("departement"):
+            return "lat" not in entree  # entrée d'avant le filtre de distance : on la complète une fois
+        return time.time() - entree.get("t", 0) > NON_TROUVE_RETENTE
 
     async def resoudre(
         self, villes: set[str], departement: str | None = None, region: str | None = None
     ) -> dict[str, dict | None]:
-        """Retourne {ville: {"departement", "region"} ou None}.
+        """Retourne {ville: {"nom", "departement", "region", "lat", "lon"} ou None}.
         Avec `departement` ou `region`, on cherche d'abord la commune dans cette zone, puis dans toute la France."""
         a_chercher: list[tuple[str, str | None, str | None]] = []
         for ville in villes:
@@ -97,7 +124,7 @@ class Geolocalisation:
 
     async def _chercher(self, ville: str, departement: str | None = None, region: str | None = None) -> None:
         cle = cle_ville(ville)
-        params = {"nom": nom_developpe(ville).title(), "fields": "nom,codeDepartement,codeRegion", "boost": "population", "limit": 5}
+        params = {"nom": nom_developpe(ville).title(), "fields": CHAMPS, "boost": "population", "limit": 5}
         if departement:
             params["codeDepartement"] = departement
         elif region:
@@ -112,13 +139,28 @@ class Geolocalisation:
                 return  # erreur réseau : on ne mémorise rien, on retentera
         # Dans une zone donnée, on accepte aussi un nom partiel ('SAVIGNY' -> Savigny-sur-Orge).
         choix = self._choisir(cle, communes, partiel=bool(departement or region))
-        self._cache[self._cle(ville, departement, region)] = {
-            "nom": choix["nom"] if choix else None,
-            "departement": choix.get("codeDepartement") if choix else None,
-            "region": choix.get("codeRegion") if choix else None,
-            "t": int(time.time()),
-        }
+        self._cache[self._cle(ville, departement, region)] = _entree(choix)
         self._modifie = True
+
+    async def commune(self, nom: str) -> dict | None:
+        """Point de départ saisi à la main (« Savigny-sur-Orge », « savigny sur orge », « Massy ») :
+        le nom exact s'il existe, sinon la commune la plus peuplée qui correspond. Mis en cache."""
+        cle = f"depart:{cle_ville(nom)}"
+        if cle in self._cache and self._cache[cle].get("lat") is not None:
+            return self._cache[cle]
+        r = await self.http.get(
+            f"{self.api_url}/communes",
+            params={"nom": nom_developpe(nom).title(), "fields": CHAMPS, "boost": "population", "limit": 5},
+        )
+        r.raise_for_status()
+        communes = [c for c in r.json() if c.get("centre")]
+        if not communes:
+            return None
+        choix = self._choisir(cle_ville(nom), communes) or communes[0]
+        self._cache[cle] = _entree(choix)
+        self._modifie = True
+        self.sauvegarder()
+        return self._cache[cle]
 
     async def decoupage(self) -> dict[str, list[dict[str, str]]]:
         """Régions et départements (codes INSEE), pour les listes de filtres."""
