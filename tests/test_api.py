@@ -295,3 +295,23 @@ def test_remplacer_cde91(client):
     cde = client.get("/competitions", params={"source": "cde91"}).json()["competitions"]
     assert all(c["calendriers"][0]["url"].startswith("https://api.test/calendriers/cde91/fichiers/") for c in cde)
     assert client.get("/calendriers/cde91/fichiers/..%2Fetat.json").status_code == 404
+
+
+def test_adresse_des_fichiers_suit_cal_public_url(tmp_path):
+    """Si CAL_PUBLIC_URL change, les liens des fichiers déposés sont corrigés au redémarrage."""
+    appels: list[str] = []
+
+    def demarrer(public_url):
+        s = Settings(data_dir=tmp_path, admin_token="secret", public_url=public_url, _env_file=None)
+        return TestClient(creer_app(s, demarrer_taches=False, transport=reseau(appels)))
+
+    pdf = (FIXTURES / "idf_calendrier.pdf").read_bytes()
+    with demarrer("https://mauvaise.adresse") as c:
+        c.post("/calendriers/idf/refresh", headers=JETON)
+        assert c.post("/calendriers/idf/cibles/fleuret", headers=JETON,
+                      files={"fichier": ("f.pdf", pdf, "application/pdf")}).status_code == 200
+    with demarrer("https://api.exemple.fr") as c:
+        urls = {c["url"] for c in _evenements(c, "FLE")}
+        assert len(urls) == 1 and urls.pop().startswith("https://api.exemple.fr/calendriers/idf/fichiers/")
+        cible = _cible(c, "idf", "fleuret")
+        assert cible["calendriers"][0]["url"].startswith("https://api.exemple.fr/")

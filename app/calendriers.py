@@ -176,7 +176,14 @@ class CalendrierPDF:
             e["date_fin"] = date.fromisoformat(e["date_fin"])
             evenements.append(Evenement(**e))
         etat = Etat(brut.get("pdfs", []), evenements, brut.get("verifie_le"), brut.get("erreur"), brut.get("version", 0))
-        if etat.version != self.version:
+        # Fichiers déposés : leur adresse dépend de CAL_PUBLIC_URL. Si elle a changé, on corrige tout de suite.
+        adresse_changee = False
+        for info in etat.pdfs:
+            if info.get("mode") == "fichier" and info.get("fichier"):
+                attendue = self.url_fichier(info["fichier"])
+                if info["url"] != attendue:
+                    info["url"], adresse_changee = attendue, True
+        if etat.version != self.version or adresse_changee:
             self._reanalyser_archives(etat)
         return etat
 
@@ -307,7 +314,8 @@ class CalendrierPDF:
         for code, cible in self.cibles.items():
             m = self.manuels.get(code)
             if m:
-                utilise = [{"url": m["url"], "nom": m["nom"]}]
+                # Adresse recalculée (fichier déposé : dépend de CAL_PUBLIC_URL, qui peut avoir changé)
+                utilise = [{"url": self._document_manuel(code).url, "nom": m["nom"]}]
             else:
                 utilise = [
                     {"url": p["url"], "nom": p.get("libelle") or Path(p["url"]).name}
