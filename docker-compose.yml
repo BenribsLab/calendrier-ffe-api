@@ -10,10 +10,11 @@ services:
     environment:
       CAL_DATA_DIR: /data  # prioritaire sur .env
     ports:
-      # Uniquement en local : en production, Apache fera le reverse proxy vers ce port.
-      - "127.0.0.1:8765:8765"
+      # Port et adresse d'écoute sur la machine hôte, réglables dans .env (API_PORT, API_BIND).
+      # 127.0.0.1 : accessible uniquement en local (en production, Apache fera le reverse proxy vers ce port).
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-8765}:8765"
     volumes:
-      - calendrier-data:/data  # cache des villes + historique des PDF du CDE 91
+      - calendrier-data:/data  # cache des villes + historique des PDF du CDE 91 et de la Ligue
 
 volumes:
   calendrier-data:

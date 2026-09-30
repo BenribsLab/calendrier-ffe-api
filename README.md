@@ -96,6 +96,8 @@ docker compose logs -f
 ```
 
 L'API écoute sur `http://127.0.0.1:8765` (documentation : `/docs`).
+Le port et l'adresse d'écoute sur la machine se règlent dans `.env` : `API_PORT` (8765 par défaut) et `API_BIND`
+(`127.0.0.1` par défaut, `0.0.0.0` pour l'ouvrir au réseau). Pensez à garder `CAL_PUBLIC_URL` cohérent.
 Les données (cache des villes, historique des PDF du CDE) sont dans le volume `calendrier-data`.
 Le conteneur tourne avec **un seul worker** : les caches et la tâche quotidienne vivent dans le processus.
 
