@@ -86,7 +86,7 @@ def creer_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[o.strip() for o in settings.cors_origins.split(",")],
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST"],  # POST : relance des calendriers PDF (protégée par jeton)
         allow_headers=["*"],
     )
 
