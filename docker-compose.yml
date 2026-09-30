@@ -1,0 +1,19 @@
+services:
+  api:
+    build: .
+    image: calendrier-ffe-api
+    container_name: calendrier-ffe-api
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      CAL_DATA_DIR: /data  # prioritaire sur .env
+    ports:
+      # Uniquement en local : en production, Apache fera le reverse proxy vers ce port.
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - calendrier-data:/data  # cache des villes + historique des PDF du CDE 91
+
+volumes:
+  calendrier-data:
