@@ -8,12 +8,14 @@ Filtres SANS effet côté FFE : regions, departements, sexe -> on filtre nous-m�
 
 import base64
 import binascii
+import re
 from dataclasses import dataclass, field
 from datetime import date
 
 import httpx
 from selectolax.parser import HTMLParser, Node
 
+from .securite import lien_web
 from .text import categories as extraire_categories
 from .text import espaces, plage_dates_ffe
 
@@ -50,7 +52,10 @@ def id_depuis_jeton(jeton: str) -> str:
 def jeton_depuis_id(id_: str) -> str:
     if not id_.startswith(PREFIXE_ID):
         raise ValueError("Identifiant FFE invalide")
-    return id_[len(PREFIXE_ID):].translate(_DEPUIS_ID)
+    jeton = id_[len(PREFIXE_ID):].translate(_DEPUIS_ID)
+    if not re.fullmatch(r"[A-Za-z0-9+/]{4,512}={0,2}", jeton):
+        raise ValueError("Identifiant FFE invalide")
+    return jeton
 
 
 @dataclass
@@ -181,7 +186,9 @@ def analyser_fiche(html: str) -> FicheFFE:
     note = site = None
     for lien in principal.css(".section__actions-links a"):
         libelle = _texte(lien).lower()
-        href = lien.attributes.get("href")
+        href = lien_web(lien.attributes.get("href"))
+        if not href:
+            continue
         if "note" in libelle:
             note = href
         elif "site" in libelle:

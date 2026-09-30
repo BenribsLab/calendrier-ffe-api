@@ -42,7 +42,8 @@ class Settings(BaseSettings):
 
     default_sources: str = "ffe,cde91,idf"
     data_dir: Path = Path("data")
-    admin_token: str = ""  # requis pour POST /calendriers/{source}/refresh
+    admin_token: str = ""  # requis pour les routes d'administration ; 24 caractères minimum, sinon elles sont désactivées
+    docs: bool = True  # documentation interactive /docs, /redoc, /openapi.json (mettre false en production)
     cors_origins: str = "*"
 
 

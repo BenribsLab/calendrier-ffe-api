@@ -6,6 +6,8 @@ from .models import ARMES, Competition
 
 
 def _echapper(texte: str) -> str:
+    # Caractères de contrôle écartés (un « \r » glissé dans ?nom= ne doit pas créer de nouvelle ligne iCalendar)
+    texte = "".join(c for c in texte if c == "\n" or c >= " ").replace("\x7f", "")
     return texte.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
 
 

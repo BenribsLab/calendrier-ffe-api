@@ -116,6 +116,23 @@ Exemples :
 ```
 
 
+## Sécurité
+
+- **Administration** : jeton `CAL_ADMIN_TOKEN` d'au moins 24 caractères (sinon les routes d'administration sont
+  désactivées), comparé en temps constant ; après 10 jetons refusés, l'adresse IP est bloquée 15 minutes.
+  Le jeton ne doit circuler qu'en HTTPS.
+- **Téléchargements (anti-SSRF)** : l'API n'accepte que des liens `http(s)` et refuse toute adresse non publique
+  (127.0.0.1, réseau Docker ou local, 169.254.169.254…), redirections comprises. Pages bornées à 5 Mo, PDF à 20 Mo.
+- **Données extérieures** : les liens venus des sites (CDE, Ligue, FFE) sont filtrés (`http(s)` uniquement) ;
+  les identifiants FFE sont validés ; le flux `.ics` écarte les caractères de contrôle.
+- **En-têtes** : `Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` ;
+  pas d'en-tête `Server`. Documentation désactivable (`CAL_DOCS=false`, recommandé en production).
+- **Conteneur** : utilisateur non privilégié, système de fichiers en lecture seule (sauf `/data` et `/tmp`),
+  aucune capacité Linux, `no-new-privileges`, mémoire / CPU / processus limités, port publié sur `127.0.0.1` seulement.
+- **Dépendances** : `pdfminer.six >= 20251107` (CVE-2025-64512). Reconstruire l'image régulièrement
+  (`docker compose build --pull`) pour les correctifs du système et des bibliothèques.
+- **Apache (reverse proxy)** : rediriger HTTP vers HTTPS et ajouter `Strict-Transport-Security`.
+
 ## Lancer avec Docker
 
 ```bash

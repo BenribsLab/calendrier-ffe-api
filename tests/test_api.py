@@ -11,6 +11,7 @@ from app.main import creer_app
 from app.service import departements_du_titre
 from app.text import cle_ville
 
+JETON_TEST = "jeton-de-test-suffisamment-long"
 FIXTURES = Path(__file__).parent / "fixtures"
 
 # Clé normalisée (cle_ville) -> (nom, département, région, latitude, longitude)
@@ -63,11 +64,11 @@ def reseau(appels: list[str]):
 @pytest.fixture
 def client(tmp_path):
     appels: list[str] = []
-    settings = Settings(data_dir=tmp_path, admin_token="secret", public_url="https://api.test", _env_file=None)
+    settings = Settings(data_dir=tmp_path, admin_token=JETON_TEST, public_url="https://api.test", _env_file=None)
     app = creer_app(settings, demarrer_taches=False, transport=reseau(appels))
     with TestClient(app) as c:
         for source in ("cde91", "idf"):
-            c.post(f"/calendriers/{source}/refresh", headers={"Authorization": "Bearer secret"})
+            c.post(f"/calendriers/{source}/refresh", headers={"Authorization": "Bearer " + JETON_TEST})
         c.appels = appels
         yield c
 
@@ -216,7 +217,7 @@ def test_ligue_idf(client):
 
 # --- Remplacement manuel des calendriers -----------------------------------------------------
 
-JETON = {"Authorization": "Bearer secret"}
+JETON = {"Authorization": "Bearer " + JETON_TEST}
 
 
 def _evenements(client, arme):
@@ -306,7 +307,7 @@ def test_adresse_des_fichiers_suit_cal_public_url(tmp_path):
     appels: list[str] = []
 
     def demarrer(public_url):
-        s = Settings(data_dir=tmp_path, admin_token="secret", public_url=public_url, _env_file=None)
+        s = Settings(data_dir=tmp_path, admin_token=JETON_TEST, public_url=public_url, _env_file=None)
         return TestClient(creer_app(s, demarrer_taches=False, transport=reseau(appels)))
 
     pdf = (FIXTURES / "idf_calendrier.pdf").read_bytes()

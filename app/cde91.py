@@ -14,6 +14,7 @@ import pdfplumber
 from selectolax.parser import HTMLParser
 
 from .calendriers import Cible, Document, Evenement, dedoublonner, saison_en_cours, slug
+from .securite import lien_web
 from .text import categories as extraire_categories
 from .text import espaces, mois, sans_accents
 
@@ -37,8 +38,8 @@ def liens_pdf(html: str, page_url: str) -> list[Document]:
     for a in zone.css("a[href]"):
         href = a.attributes["href"] or ""
         if href.lower().split("?")[0].endswith(".pdf"):
-            url = urljoin(page_url, href)
-            if url not in (d.url for d in liens):
+            url = lien_web(urljoin(page_url, href))
+            if url and url not in (d.url for d in liens):
                 liens.append(Document(url, a.text(strip=True)))
     return liens
 

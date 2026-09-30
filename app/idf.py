@@ -22,6 +22,7 @@ import pdfplumber
 from selectolax.parser import HTMLParser
 
 from .calendriers import Cible, Document, Evenement, dedoublonner, saison_en_cours, slug
+from .securite import lien_web
 from .cde91 import armes as armes_du_texte
 from .models import CATEGORIES
 from .text import categories as extraire_categories
@@ -64,7 +65,10 @@ def liens_calendriers(html: str, page_url: str) -> list[Document]:
             continue
         if not chemin.endswith((".pdf", ".xls", ".xlsx")):
             continue
-        doc = Document(urljoin(page_url, href), libelle)
+        url = lien_web(urljoin(page_url, href))
+        if not url:
+            continue
+        doc = Document(url, libelle)
         if doc not in documents:
             documents.append(doc)
     return documents

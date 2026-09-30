@@ -11,10 +11,24 @@ services:
       CAL_DATA_DIR: /data  # prioritaire sur .env
     ports:
       # Port et adresse d'écoute sur la machine hôte, réglables dans .env (API_PORT, API_BIND).
-      # 127.0.0.1 : accessible uniquement en local (en production, Apache fera le reverse proxy vers ce port).
+      # Garder 127.0.0.1 en production : seul Apache (reverse proxy) doit joindre ce port. L'API fait confiance
+      # à l'en-tête X-Forwarded-For (adresse du visiteur) : ouvert au réseau, il pourrait être falsifié.
       - "${API_BIND:-127.0.0.1}:${API_PORT:-8765}:8765"
     volumes:
       - calendrier-data:/data  # cache des villes + historique des PDF du CDE 91 et de la Ligue
+
+    # --- Durcissement : même en cas de faille, le conteneur ne peut ni modifier l'application,
+    # ni obtenir de privilèges, ni épuiser les ressources du serveur.
+    read_only: true            # système de fichiers en lecture seule (sauf /data et /tmp)
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL                    # aucun privilège Linux (l'application n'en a besoin d'aucun)
+    security_opt:
+      - no-new-privileges:true # impossible d'en acquérir (setuid…)
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 128
 
 volumes:
   calendrier-data:

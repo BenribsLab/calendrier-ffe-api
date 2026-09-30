@@ -24,12 +24,12 @@ from pathlib import Path
 
 import httpx
 
+from .securite import TAILLE_MAX_PAGE, TAILLE_MAX_PDF, lien_web, telecharger
 from .text import cle_ville, sans_accents
 
 log = logging.getLogger(__name__)
 
 LIEU_INDETERMINE = "Lieu indéterminé"
-TAILLE_MAX_PDF = 20 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -247,9 +247,7 @@ class CalendrierPDF:
     async def _contenu(self, doc: Document) -> bytes:
         if doc.fichier:
             return (self.dossier / "pdf" / doc.fichier).read_bytes()
-        r = await self.http.get(doc.url)
-        r.raise_for_status()
-        return r.content
+        return (await telecharger(self.http, doc.url, TAILLE_MAX_PDF)).content
 
     async def remplacer(self, code: str, *, contenu: bytes | None = None, nom: str = "", lien: str | None = None) -> dict:
         """Remplace une cible par un fichier déposé (`contenu`, `nom`) ou un lien web (`lien`).
@@ -259,11 +257,9 @@ class CalendrierPDF:
         if cible is None:
             raise KeyError(code)
         if lien:
-            if not re.match(r"^https?://", lien):
+            if not lien_web(lien):
                 raise ValueError("Le lien doit commencer par http:// ou https://")
-            r = await self.http.get(lien)
-            r.raise_for_status()
-            contenu, nom = r.content, lien
+            contenu, nom = (await telecharger(self.http, lien, TAILLE_MAX_PDF)).content, lien
         if not contenu:
             raise ValueError("Fichier vide")
         if len(contenu) > TAILLE_MAX_PDF:
@@ -336,8 +332,7 @@ class CalendrierPDF:
     async def rafraichir(self, forcer: bool = False) -> Etat:
         maintenant = datetime.now(timezone.utc).isoformat(timespec="seconds")
         try:
-            r = await self.http.get(self.page_url)
-            r.raise_for_status()
+            r = await telecharger(self.http, self.page_url, TAILLE_MAX_PAGE)
             documents = self._documents(self.trouver_documents(r.text, str(r.url)))
             if not documents:
                 raise ValueError(f"Aucun calendrier trouvé sur {self.page_url}")

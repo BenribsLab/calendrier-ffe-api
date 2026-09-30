@@ -15,11 +15,24 @@ from . import cde91, idf
 from .calendriers import CalendrierPDF
 from .config import Settings, get_settings
 from .ffe import ClientFFE
+from .securite import TAILLE_MAX_PDF, GardeReseau, LimiteTentatives
 from .geo import Geolocalisation
 from .models import ARMES, CATEGORIES, CompetitionDetail, CompetitionList, PointDepart
 from .service import SOURCES, Recherche, Service, liste_parametre
 
 log = logging.getLogger("calendrier_ffe")
+
+LONGUEUR_MIN_JETON = 24
+
+# En-têtes de sécurité : l'API ne sert que du JSON, de l'iCalendar et des PDF (jamais de page à exécuter),
+# sauf la documentation /docs qui a besoin de ses scripts.
+ENTETES_SECURITE = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+}
+CSP_API = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 
 
 async def _tache_quotidienne(service: Service, heure: int) -> None:
@@ -52,7 +65,10 @@ def creer_app(
             headers={"User-Agent": settings.user_agent},
             timeout=settings.http_timeout,
             follow_redirects=True,
+            max_redirects=5,
             transport=transport,
+            # Garde SSRF sur chaque requête sortante, redirections comprises (sauf réseau simulé des tests)
+            event_hooks={"request": [GardeReseau()]} if transport is None else None,
         ) as http:
             app.state.service = Service(
                 settings,
@@ -84,7 +100,27 @@ def creer_app(
             "et du calendrier départemental du CDE 91 (PDF analysé chaque jour)."
         ),
         lifespan=lifespan,
+        docs_url="/docs" if settings.docs else None,
+        redoc_url="/redoc" if settings.docs else None,
+        openapi_url="/openapi.json" if settings.docs else None,
     )
+
+    @app.middleware("http")
+    async def entetes_securite(request: Request, call_next):
+        reponse = await call_next(request)
+        for nom, valeur in ENTETES_SECURITE.items():
+            reponse.headers.setdefault(nom, valeur)
+        if not request.url.path.startswith(("/docs", "/redoc")):
+            reponse.headers.setdefault("Content-Security-Policy", CSP_API)
+        return reponse
+
+    if len(settings.admin_token) < LONGUEUR_MIN_JETON:
+        log.warning(
+            "CAL_ADMIN_TOKEN absent ou trop court (%d caractères minimum) : routes d'administration désactivées",
+            LONGUEUR_MIN_JETON,
+        )
+    tentatives = LimiteTentatives()
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[o.strip() for o in settings.cors_origins.split(",")],
@@ -96,13 +132,13 @@ def creer_app(
         return request.app.state.service
 
     async def recherche(
-        source: str | None = Query(None, description="ffe,cde91,idf"),
-        arme: str | None = Query(None, description="Codes séparés par des virgules : " + ",".join(ARMES)),
-        categorie: str | None = Query(None, description=",".join(CATEGORIES)),
-        departement: str | None = Query(None, description="Codes INSEE, ex. 91,78"),
-        region: str | None = Query(None, description="Codes INSEE, ex. 11 (Île-de-France)"),
-        niveau: str | None = Query(None, description="Code niveau FFE (voir /referentiel)"),
-        ville: str | None = Query(None, description="Tout ou partie du nom de la ville"),
+        source: str | None = Query(None, max_length=40, description="ffe,cde91,idf"),
+        arme: str | None = Query(None, max_length=40, description="Codes séparés par des virgules : " + ",".join(ARMES)),
+        categorie: str | None = Query(None, max_length=80, description=",".join(CATEGORIES)),
+        departement: str | None = Query(None, max_length=200, description="Codes INSEE, ex. 91,78"),
+        region: str | None = Query(None, max_length=100, description="Codes INSEE, ex. 11 (Île-de-France)"),
+        niveau: str | None = Query(None, max_length=10, pattern=r"^\d*$", description="Code niveau FFE (voir /referentiel)"),
+        ville: str | None = Query(None, max_length=80, description="Tout ou partie du nom de la ville"),
         date_debut: date | None = Query(None, description="AAAA-MM-JJ"),
         date_fin: date | None = Query(None, description="AAAA-MM-JJ"),
         equipe: str | None = Query(None, pattern="^(individuel|equipe)$"),
@@ -111,7 +147,7 @@ def creer_app(
             description="Compétitions officielles uniquement : tout le CDE 91 ; épreuves, championnats et H2036 "
             "en Île-de-France ; circuits nationaux et championnats de France partout",
         ),
-        pres_de: str | None = Query(None, description="Filtre de distance : commune de départ (ex. Savigny-sur-Orge)"),
+        pres_de: str | None = Query(None, max_length=80, description="Filtre de distance : commune de départ (ex. Savigny-sur-Orge)"),
         lat: float | None = Query(None, ge=-90, le=90, description="…ou position de départ (latitude)"),
         lon: float | None = Query(None, ge=-180, le=180, description="…et longitude"),
         rayon: float | None = Query(None, gt=0, le=2000, description="Distance maximale en km, à vol d'oiseau"),
@@ -170,7 +206,7 @@ def creer_app(
 
     @app.get("/competitions.ics", tags=["Compétitions"], response_class=Response)
     async def competitions_ics(
-        nom: str = Query("Compétitions d'escrime", description="Nom du calendrier affiché dans l'agenda"),
+        nom: str = Query("Compétitions d'escrime", max_length=120, description="Nom du calendrier affiché dans l'agenda"),
         r: Recherche = Depends(recherche),
         s: Service = Depends(service),
     ):
@@ -248,9 +284,15 @@ def creer_app(
         """État de la dernière analyse d'un calendrier PDF."""
         return etat_calendrier(cal)
 
-    def admin(authorization: str = Header("")):
-        attendu = f"Bearer {settings.admin_token}"
-        if not settings.admin_token or not secrets.compare_digest(authorization, attendu):
+    def admin(request: Request, authorization: str = Header("")):
+        if len(settings.admin_token) < LONGUEUR_MIN_JETON:
+            raise HTTPException(503, f"Administration désactivée : CAL_ADMIN_TOKEN absent ou trop court ({LONGUEUR_MIN_JETON} caractères minimum)")
+        ip = request.client.host if request.client else "?"
+        if tentatives.bloquee(ip):
+            raise HTTPException(429, "Trop de jetons refusés depuis cette adresse : réessayez dans 15 minutes")
+        if not secrets.compare_digest(authorization.encode(), f"Bearer {settings.admin_token}".encode()):
+            tentatives.echec(ip)
+            log.warning("Jeton d'administration refusé (IP %s, %s %s)", ip, request.method, request.url.path)
             raise HTTPException(401, "Jeton d'administration requis")
 
     @app.post("/calendriers/{source}/refresh", tags=["Calendriers PDF"], dependencies=[Depends(admin)])
@@ -275,7 +317,12 @@ def creer_app(
             raise HTTPException(422, "Donner soit un fichier, soit un lien (et pas les deux)")
         try:
             if fichier is not None:
-                bilan = await cal.remplacer(cible, contenu=await fichier.read(), nom=fichier.filename or "calendrier.pdf")
+                contenu = bytearray()
+                while morceau := await fichier.read(1024 * 1024):
+                    contenu += morceau
+                    if len(contenu) > TAILLE_MAX_PDF:
+                        raise HTTPException(413, "Fichier trop volumineux (20 Mo maximum)")
+                bilan = await cal.remplacer(cible, contenu=bytes(contenu), nom=fichier.filename or "calendrier.pdf")
             else:
                 bilan = await cal.remplacer(cible, lien=lien.strip())
         except ValueError as exc:
