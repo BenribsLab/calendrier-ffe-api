@@ -460,3 +460,24 @@ def test_manuelle_import_csv(client):
     assert len(client.get("/manuelles", headers=ADMIN).json()) == 2
     r = client.post("/manuelles/import", files={"fichier": ("m.csv", b"nom;lieu\nA;B\n", "text/csv")}, headers=ADMIN)
     assert r.status_code == 422 and "date_debut" in r.json()["detail"]
+
+
+def test_manuelle_import_retour_ligne(client):
+    # Le fichier contient littéralement les deux caractères « \ » et « n »
+    csv = "nom;lieu;date_debut;categories;remarque\nA;Massy;01/12/2026;M15;RDV 9 h\\nRepas tiré du sac\\r\\nTenue complète\n"
+    r = client.post("/manuelles/import", files={"fichier": ("m.csv", csv.encode(), "text/csv")}, headers=ADMIN)
+    assert r.status_code == 200, r.text
+    assert r.json()["competitions"][0]["remarque"] == "RDV 9 h\nRepas tiré du sac\nTenue complète"
+
+
+def test_manuelle_remarque_ancienne_corrigee(tmp_path):
+    from app.manuelles import Manuelles
+    import json
+    (tmp_path / "manuelles.json").write_text(json.dumps([{
+        "id": "manuel-2026-12-01-a-massy-abc123", "titre": "A", "lieu": "Massy", "date_debut": "2026-12-01",
+        "date_fin": "2026-12-01", "categories": ["M15"], "remarque": "Ligne 1\\nLigne 2",
+        "cree_le": "2026-10-01T10:00:00+02:00", "modifie_le": "2026-10-01T10:00:00+02:00",
+    }]), encoding="utf-8")
+    m = Manuelles(tmp_path)
+    assert m.get("manuel-2026-12-01-a-massy-abc123").remarque == "Ligne 1\nLigne 2"
+    assert json.loads((tmp_path / "manuelles.json").read_text(encoding="utf-8"))[0]["remarque"] == "Ligne 1\nLigne 2"

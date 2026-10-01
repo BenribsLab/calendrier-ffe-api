@@ -95,7 +95,7 @@ Champs : `titre`, `lieu`, `date_debut` et `categories` obligatoires ; `date_fin`
 - `liee_ffe` : quand la compétition apparaît sur le site fédéral (dates qui se chevauchent, même lieu, même arme, une
   catégorie en commun), la fiche FFE la remplace et reçoit les informations du club (remarque, document, préinscription).
 - CSV : séparateur `;` ou `,`, UTF-8 ou Windows-1252, dates `JJ/MM/AAAA`, armes `Fleuret, Épée` ou `FLE,EPE`,
-  catégories `M11, M13` ou `M13 à M17`, booléens `oui` / `non`.
+  catégories `M11, M13` ou `M13 à M17`, booléens `oui` / `non`, `\n` dans la remarque pour aller à la ligne.
 
 Filtres (tous facultatifs, listes séparées par des virgules) :
 

@@ -73,10 +73,16 @@ class SaisieManuelle(BaseModel):
             raise ValueError("obligatoire")
         return v
 
-    @field_validator("document_nom", "remarque")
+    @field_validator("document_nom")
     @classmethod
     def _facultatif(cls, v: str | None) -> str | None:
         return v.strip() or None if v else None
+
+    @field_validator("remarque")
+    @classmethod
+    def _remarque(cls, v: str | None) -> str | None:
+        # « \n » écrit tel quel (CSV fait à la main, ou \r\n, \r) : retour à la ligne
+        return re.sub(r"\\r\\n|\\n|\\r|\r\n?", "\n", v).strip() or None if v else None
 
     @field_validator("document_url")
     @classmethod
@@ -152,6 +158,9 @@ class Manuelles:
                 resultat[c.id] = c
             except ValidationError:
                 log.exception("Compétition manuelle illisible, ignorée : %r", item)
+        if any(c.model_dump(mode="json") != item for item, c in zip(brut, resultat.values())):
+            self.competitions = resultat
+            self._sauver()  # ex. remarque corrigée à la lecture (« \n » devenu un retour à la ligne)
         return resultat
 
     def _sauver(self) -> None:
