@@ -356,3 +356,107 @@ def test_distance_erreurs(client):
     assert client.get("/competitions", params={"pres_de": "Nullepart-sur-Rien", "rayon": 10}).status_code == 422
     assert client.get("/competitions", params={"lat": 48.6, "rayon": 10}).status_code == 422
     assert client.get("/competitions", params={"lat": 120, "lon": 2, "rayon": 10}).status_code == 422
+
+
+# --- Compétitions ajoutées à la main -----------------------------------------------------
+
+ADMIN = {"Authorization": "Bearer " + JETON_TEST}
+
+
+def _manuelle(**champs):
+    return {"titre": "Stage de Toussaint", "lieu": "Massy", "date_debut": "2026-10-26", "categories": ["M11", "M13"], **champs}
+
+
+def test_manuelle_ajout_liste_detail(client):
+    assert client.post("/manuelles", json=_manuelle()).status_code == 401
+    r = client.post("/manuelles", json=_manuelle(
+        armes=["EPE"], remarque="Gratuit", document_url="https://exemple.fr/stage.pdf", document_nom="Programme",
+        preinscription=False, inscription_sur_place=True,
+    ), headers=ADMIN)
+    assert r.status_code == 201, r.text
+    m = r.json()
+    assert m["id"].startswith("manuel-2026-10-26-stage-de-toussaint-massy-") and m["date_fin"] == "2026-10-26"
+
+    d = client.get("/competitions", params={"source": "manuel", "arme": "EPE", "officielle": "true"}).json()
+    assert d["count"] == 1
+    c = d["competitions"][0]
+    assert c["sources"] == ["manuel"] and c["officielle"] and c["departement"] == "91"
+    assert c["remarque"] == "Gratuit" and c["preinscription"] is False and c["inscription_sur_place"] is True
+    assert c["calendriers"] == [{"source": "manuel", "libelle": "Programme", "url": "https://exemple.fr/stage.pdf"}]
+    assert c["categories_libelle"] == "M11, M13"
+    assert client.get(f"/competitions/{m['id']}").json()["titre"] == "Stage de Toussaint"
+    assert "Remarque : Gratuit" in client.get("/competitions.ics", params={"source": "manuel"}).text
+
+    # Modification, puis suppression
+    r = client.put(f"/manuelles/{m['id']}", json=_manuelle(titre="Stage d'automne", armes=["EPE"]), headers=ADMIN)
+    assert r.status_code == 200 and r.json()["titre"] == "Stage d'automne" and r.json()["cree_le"] == m["cree_le"]
+    assert [x["id"] for x in client.get("/manuelles", headers=ADMIN).json()] == [m["id"]]
+    assert client.delete(f"/manuelles/{m['id']}", headers=ADMIN).status_code == 200
+    assert client.get(f"/competitions/{m['id']}").status_code == 404
+    assert client.delete(f"/manuelles/{m['id']}", headers=ADMIN).status_code == 404
+
+
+def test_manuelle_validation_et_armes(client):
+    for mauvais in (
+        {"titre": ""}, {"categories": []}, {"categories": ["M99"]}, {"armes": ["XXX"]},
+        {"date_fin": "2026-10-01"}, {"document_url": "javascript:alert(1)"}, {"delai_inscription_jours": 0},
+    ):
+        assert client.post("/manuelles", json=_manuelle(**mauvais), headers=ADMIN).status_code == 422, mauvais
+    # Sans arme : affichée quelle que soit l'arme choisie ; plusieurs armes : une compétition par arme
+    sans = client.post("/manuelles", json=_manuelle(), headers=ADMIN).json()
+    client.post("/manuelles", json=_manuelle(titre="Tournoi", armes=["FLE", "SAB"]), headers=ADMIN)
+    fle = client.get("/competitions", params={"source": "manuel", "arme": "FLE"}).json()["competitions"]
+    assert {c["id"] for c in fle} >= {sans["id"]} and len(fle) == 2
+    ids = {c["id"] for c in client.get("/competitions", params={"source": "manuel"}).json()["competitions"]}
+    assert len(ids) == 3 and any(i.endswith(".SAB") for i in ids)
+    assert client.get("/competitions", params={"source": "manuel", "categorie": "SENIOR"}).json()["count"] == 0
+
+
+def test_manuelle_liee_ffe_fusionnee(client):
+    # Une compétition de la liste FFE dont la fiche (page de test, la même pour tous les identifiants) concorde
+    def concorde(c):
+        if not (c["lieu"] and c["lieu"] != "Lieu indéterminé" and c["categories"]):
+            return False
+        f = client.get(f"/competitions/{c['id']}")
+        return f.status_code == 200 and f.json()["lieu"] == c["lieu"] and f.json()["date_debut"] == c["date_debut"]
+
+    ffe = next(c for c in client.get("/competitions", params={"source": "ffe"}).json()["competitions"] if concorde(c))
+    saisie = _manuelle(titre="Notre tournoi", lieu=ffe["lieu"], date_debut=ffe["date_debut"], armes=ffe["armes"],
+                       categories=ffe["categories"], remarque="Covoiturage", delai_inscription_jours=10, liee_ffe=True)
+    m = client.post("/manuelles", json=saisie, headers=ADMIN).json()
+    d = client.get("/competitions", params={"source": "ffe,manuel"}).json()["competitions"]
+    fusion = next(c for c in d if c["id"] == ffe["id"])
+    assert fusion["sources"] == ["ffe", "manuel"] and fusion["remarque"] == "Covoiturage"
+    assert fusion["delai_inscription_jours"] == 10 and fusion["id_manuel"] == m["id"] and fusion["titre"] == ffe["titre"]
+    assert not any(c["id"] == m["id"] for c in d)  # pas de doublon
+    detail = client.get(f"/competitions/{ffe['id']}").json()
+    assert detail.get("remarque") == "Covoiturage", (ffe, detail)
+    # Non liée : affichée à part
+    client.put(f"/manuelles/{m['id']}", json={**saisie, "liee_ffe": False}, headers=ADMIN)
+    d = client.get("/competitions", params={"source": "ffe,manuel"}).json()["competitions"]
+    assert any(c["id"] == m["id"] for c in d) and next(c for c in d if c["id"] == ffe["id"])["remarque"] is None
+
+
+def test_manuelle_import_csv(client):
+    modele = client.get("/manuelles/modele.csv")
+    assert modele.status_code == 200 and modele.text.startswith("\ufeffnom;lieu;date_debut")
+    r = client.post("/manuelles/import", files={"fichier": ("m.csv", modele.content, "text/csv")}, data={"essai": "true"}, headers=ADMIN)
+    assert r.status_code == 200, r.text
+    assert r.json()["essai"] and r.json()["nb"] == 2 and client.get("/manuelles", headers=ADMIN).json() == []
+
+    r = client.post("/manuelles/import", files={"fichier": ("m.csv", modele.content, "text/csv")}, headers=ADMIN)
+    assert r.json()["nb"] == 2
+    liste = client.get("/manuelles", headers=ADMIN).json()
+    noel = next(m for m in liste if m["titre"] == "Tournoi de Noël")
+    assert noel["armes"] == ["EPE"] and noel["categories"] == ["M13", "M15", "M17"] and noel["delai_inscription_jours"] == 10
+    assert noel["liee_ffe"] and noel["inscription_sur_place"] and noel["document_nom"] == "Invitation"
+    stage = next(m for m in liste if m["titre"] == "Stage de Toussaint")
+    assert stage["preinscription"] is False and stage["date_fin"] == "2026-10-28"
+
+    # Windows-1252, séparateur virgule, en-têtes approximatifs ; une ligne fausse : rien n'est ajouté
+    csv = "Nom,Lieu,Date,Catégories,Armes\nA,Massy,01/12/2026,M15,Épée\nB,Massy,32/12/2026,M15,Fleuret\nC,Massy,01/12/2026,M15,Hache\n"
+    r = client.post("/manuelles/import", files={"fichier": ("m.csv", csv.encode("cp1252"), "text/csv")}, headers=ADMIN)
+    assert r.status_code == 422 and "ligne 3" in r.json()["detail"] and "ligne 4" in r.json()["detail"]
+    assert len(client.get("/manuelles", headers=ADMIN).json()) == 2
+    r = client.post("/manuelles/import", files={"fichier": ("m.csv", b"nom;lieu\nA;B\n", "text/csv")}, headers=ADMIN)
+    assert r.status_code == 422 and "date_debut" in r.json()["detail"]

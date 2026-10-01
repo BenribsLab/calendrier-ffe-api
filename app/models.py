@@ -52,6 +52,13 @@ class Competition(BaseModel):
     url: str | None = Field(None, description="Fiche FFE ou PDF du CDE")
     note_url: str | None = Field(None, description="Lien vers la note d'organisation (redirige vers la fiche si non publiée)")
     calendriers: list[LienCalendrier] = Field(default_factory=list, description="Calendriers PDF (CDE 91, Ligue) qui la mentionnent")
+    # Informations du club (compétitions ajoutées à la main, ou fiche FFE liée à l'une d'elles)
+    remarque: str | None = None
+    preinscription: bool | None = Field(None, description="false : pas de préinscription sur le site du club ; null : règle habituelle")
+    delai_inscription_jours: int | None = Field(None, description="Hors délai à partir de N jours avant le début, à midi ; null : règle habituelle")
+    inscription_sur_place: bool | None = None
+    liee_ffe: bool | None = Field(None, description="Compétition ajoutée à la main qui sera publiée sur le site fédéral")
+    id_manuel: str | None = Field(None, description="Compétition ajoutée à la main d'où viennent ces informations")
 
 
 class CompetitionDetail(Competition):

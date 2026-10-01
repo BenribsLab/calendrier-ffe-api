@@ -1,4 +1,5 @@
-"""Assemble les sources (FFE en temps réel, calendriers PDF du CDE 91 et de la Ligue IDF) et applique les filtres.
+"""Assemble les sources (FFE en temps réel, calendriers PDF du CDE 91 et de la Ligue IDF, compétitions ajoutées à la
+main par le club) et applique les filtres.
 
 Une compétition = une arme : une fiche FFE (ou une ligne du CDE) qui regroupe plusieurs armes est éclatée en une
 compétition par arme (identifiant suffixé « .EPE », « .FLE »…). Chaque arme est ainsi rapprochée, filtrée et jugée
@@ -10,19 +11,20 @@ import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
-from . import idf
+from . import idf, manuelles
 from .cache import CacheTTL
-from .calendriers import LIEU_INDETERMINE, CalendrierPDF, Evenement, lieu_connu, meme_evenement
+from .calendriers import LIEU_INDETERMINE, CalendrierPDF, Evenement, lieu_connu, meme_evenement, meme_lieu
 from .config import Settings
 from .ffe import ClientFFE, FicheFFE, Filtres, LigneFFE, jeton_depuis_id, type_et_echelon
 from .geo import Geolocalisation, distance_km
+from .manuelles import CompetitionManuelle, Manuelles
 from .models import ARMES, Competition, CompetitionDetail, CompetitionList, LienCalendrier, PointDepart, SourceStatus
 from .text import cle_ville, sans_accents
 
 log = logging.getLogger(__name__)
 
-SOURCES = ("ffe", "cde91", "idf")
-LIBELLES = {"ffe": "Calendrier FFE", "cde91": "Calendrier CDE 91", "idf": "Calendrier Ligue IDF"}
+SOURCES = ("ffe", "cde91", "idf", manuelles.NOM)
+LIBELLES = {"ffe": "Calendrier FFE", "cde91": "Calendrier CDE 91", "idf": "Calendrier Ligue IDF", manuelles.NOM: manuelles.LIBELLE}
 
 # "H2036 8eme de finale - 75-93", "1/8 finale Fête des Jeunes (77-91-94)" :
 # compétition réservée aux départements listés en fin de titre.
@@ -96,8 +98,12 @@ class Recherche(Filtres):
 
 
 class Service:
-    def __init__(self, settings: Settings, ffe: ClientFFE, calendriers: dict[str, CalendrierPDF], geo: Geolocalisation):
+    def __init__(
+        self, settings: Settings, ffe: ClientFFE, calendriers: dict[str, CalendrierPDF], geo: Geolocalisation,
+        manuelles: Manuelles | None = None,
+    ):
         self.settings = settings
+        self.manuelles = manuelles or Manuelles(settings.data_dir)
         self.ffe = ffe
         self.calendriers = calendriers  # {"cde91": …, "idf": …}, dans l'ordre de fusion
         self.geo = geo
@@ -145,6 +151,63 @@ class Service:
             url=e.pdf_url,
             calendriers=[lien_calendrier(source, e)],
         )
+
+    @staticmethod
+    def _depuis_manuelle(m: CompetitionManuelle) -> Competition:
+        return Competition(
+            id=m.id,
+            sources=[manuelles.NOM],
+            titre=m.titre,
+            lieu=m.lieu,
+            date_debut=m.date_debut,
+            date_fin=m.date_fin,
+            armes=m.armes,
+            categories=m.categories,
+            categories_libelle=manuelles.libelle_categories(m.categories),
+            calendriers=Service._documents_manuelle(m),
+            remarque=m.remarque,
+            preinscription=m.preinscription,
+            delai_inscription_jours=m.delai_inscription_jours,
+            inscription_sur_place=m.inscription_sur_place,
+            liee_ffe=m.liee_ffe,
+            id_manuel=m.id,
+        )
+
+    @staticmethod
+    def _documents_manuelle(m: CompetitionManuelle) -> list[LienCalendrier]:
+        if not m.document_url:
+            return []
+        return [LienCalendrier(source=manuelles.NOM, libelle=m.document_nom or "Document", url=m.document_url)]
+
+    @staticmethod
+    def _meme_que_manuelle(m: Competition, c: Competition) -> bool:
+        """Compétition FFE qui est la compétition « liée FFE » ajoutée à la main : dates qui se chevauchent, même lieu,
+        même arme (toutes si la saisie n'en précise pas), une catégorie en commun."""
+        return (
+            "ffe" in c.sources
+            and manuelles.NOM not in c.sources
+            and m.date_debut <= c.date_fin and c.date_debut <= m.date_fin
+            and lieu_connu(c.lieu) and meme_lieu(m.lieu, c.lieu)
+            and (not m.armes or bool(set(m.armes) & set(c.armes)))
+            and (not c.categories or bool(set(m.categories) & set(c.categories)))
+        )
+
+    @staticmethod
+    def _fusionner_manuelle(c: Competition, m: Competition) -> None:
+        """La fiche FFE fait référence (nom, dates, note) ; le club y ajoute ses informations."""
+        c.sources.append(manuelles.NOM)
+        for lien in m.calendriers:
+            if lien not in c.calendriers:
+                c.calendriers.append(lien)
+        c.remarque = m.remarque
+        c.preinscription = m.preinscription
+        c.delai_inscription_jours = m.delai_inscription_jours
+        c.inscription_sur_place = m.inscription_sur_place
+        c.liee_ffe = True
+        c.id_manuel = m.id_manuel
+
+    def _competitions_manuelles(self) -> list[Competition]:
+        return [x for m in self.manuelles.liste() for x in eclater(self._depuis_manuelle(m))]
 
     def _fusionner(self, c: Competition, source: str, e: Evenement) -> None:
         """Même compétition dans plusieurs sources : on garde la FFE (dates exactes, lieu, fiche, note).
@@ -232,6 +295,18 @@ class Service:
             await self._geolocaliser(nouvelles)
             competitions += nouvelles
 
+        if manuelles.NOM in r.sources:
+            statuts[manuelles.NOM] = SourceStatus(ok=True, fetched_at=datetime.now(timezone.utc))
+            nouvelles = []
+            for m in self._competitions_manuelles():
+                fiches = [c for c in competitions if m.liee_ffe and self._meme_que_manuelle(m, c)]
+                for c in fiches:
+                    self._fusionner_manuelle(c, m)
+                if not fiches:
+                    nouvelles.append(m)
+            await self._geolocaliser(nouvelles)
+            competitions += nouvelles
+
         competitions = [c for c in competitions if self._garder(c, r)]
         for c in competitions:
             c.officielle = self.est_officielle(c)
@@ -263,7 +338,7 @@ class Service:
     @staticmethod
     def _garder(c: Competition, r: Recherche) -> bool:
         # Filtres locaux : indispensables pour les calendriers PDF, redondants (mais sans risque) pour la FFE.
-        if r.armes and not set(r.armes) & set(c.armes):
+        if r.armes and c.armes and not set(r.armes) & set(c.armes):  # sans arme (ajout manuel) : toutes
             return False
         if r.categories and c.categories and not set(r.categories) & set(c.categories):
             return False
@@ -282,8 +357,8 @@ class Service:
         reserve_a = departements_du_titre(c.titre)
         if reserve_a and notre_departement not in reserve_a:
             return False  # ex. "H2036 8eme de finale - 75-93", "1/8 finale Fête des Jeunes (78-92-95)"
-        if "cde91" in c.sources or "idf" in c.sources:
-            return True  # calendriers départemental et régional
+        if "cde91" in c.sources or "idf" in c.sources or manuelles.NOM in c.sources:
+            return True  # calendriers départemental et régional, compétitions ajoutées par le club
         if c.echelon == "national" and c.type in ("epreuve", "championnat"):
             return True  # circuits nationaux et championnats de France
         if c.region != self.settings.officielle_region:
@@ -324,6 +399,16 @@ class Service:
 
     async def detail(self, id_: str) -> CompetitionDetail | None:
         base, arme = separer_id(id_)
+        if base.startswith(f"{manuelles.NOM}-"):
+            m = self.manuelles.get(base)
+            if not m or (arme and arme not in m.armes):
+                return None
+            c = self._depuis_manuelle(m)
+            if arme:
+                c = c.model_copy(update={"id": id_, "armes": [arme]})
+            await self._geolocaliser([c])
+            c.officielle = self.est_officielle(c)
+            return CompetitionDetail(**c.model_dump())
         for source, cal in self.calendriers.items():
             if base.startswith(f"{source}-"):
                 e = next((e for e in cal.etat.evenements if e.id == base), None)
@@ -361,6 +446,9 @@ class Service:
                 # Sans lieu, le rapprochement dépend des autres compétitions du week-end : réservé à la liste.
                 if lieu_connu(e.lieu) and self._correspondances(source, e, [c]):
                     self._fusionner(c, source, e)
+        m = next((m for m in self._competitions_manuelles() if m.liee_ffe and self._meme_que_manuelle(m, c)), None)
+        if m:
+            self._fusionner_manuelle(c, m)
         c.officielle = self.est_officielle(c)
         return CompetitionDetail(**c.model_dump(), note_organisation=fiche.note_organisation, site_web=fiche.site_web)
 

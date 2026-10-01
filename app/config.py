@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # circuits nationaux et championnats de France partout.
     officielle_region: str = "11"
 
-    default_sources: str = "ffe,cde91,idf"
+    default_sources: str = "ffe,cde91,idf,manuel"
     data_dir: Path = Path("data")
     admin_token: str = ""  # requis pour les routes d'administration ; 24 caractères minimum, sinon elles sont désactivées
     docs: bool = True  # documentation interactive /docs, /redoc, /openapi.json (mettre false en production)

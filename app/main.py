@@ -11,12 +11,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from . import ics
-from . import cde91, idf
+from . import cde91, idf, manuelles
 from .calendriers import CalendrierPDF
 from .config import Settings, get_settings
 from .ffe import ClientFFE
 from .securite import TAILLE_MAX_PDF, GardeReseau, LimiteTentatives
 from .geo import Geolocalisation
+from .manuelles import CompetitionManuelle, Manuelles, SaisieManuelle
 from .models import ARMES, CATEGORIES, CompetitionDetail, CompetitionList, PointDepart
 from .service import SOURCES, Recherche, Service, liste_parametre
 
@@ -86,6 +87,7 @@ def creer_app(
                     ),
                 },
                 Geolocalisation(http, settings.geo_api_url, settings.data_dir, settings.geo_concurrency),
+                Manuelles(settings.data_dir),
             )
             tache = asyncio.create_task(_tache_quotidienne(app.state.service, settings.calendriers_refresh_hour)) if demarrer_taches else None
             yield
@@ -124,7 +126,7 @@ def creer_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[o.strip() for o in settings.cors_origins.split(",")],
-        allow_methods=["GET", "POST", "DELETE"],  # POST / DELETE : administration des calendriers (jeton)
+        allow_methods=["GET", "POST", "PUT", "DELETE"],  # POST / PUT / DELETE : administration (jeton)
         allow_headers=["*"],
     )
 
@@ -132,7 +134,7 @@ def creer_app(
         return request.app.state.service
 
     async def recherche(
-        source: str | None = Query(None, max_length=40, description="ffe,cde91,idf"),
+        source: str | None = Query(None, max_length=40, description="ffe,cde91,idf,manuel"),
         arme: str | None = Query(None, max_length=40, description="Codes séparés par des virgules : " + ",".join(ARMES)),
         categorie: str | None = Query(None, max_length=80, description=",".join(CATEGORIES)),
         departement: str | None = Query(None, max_length=200, description="Codes INSEE, ex. 91,78"),
@@ -154,6 +156,8 @@ def creer_app(
         s: Service = Depends(service),
     ) -> Recherche:
         sources = liste_parametre(source or settings.default_sources, majuscules=False)
+        if not source and manuelles.NOM not in sources:
+            sources.append(manuelles.NOM)  # compétitions ajoutées par le club : toujours, même avec un ancien .env
         inconnues = set(sources) - set(SOURCES)
         if inconnues:
             raise HTTPException(422, f"Source(s) inconnue(s) : {', '.join(sorted(inconnues))}")
@@ -347,6 +351,63 @@ def creer_app(
             raise HTTPException(404, "Fichier introuvable")
         return FileResponse(chemin, media_type="application/pdf", filename=fichier.split("_", 1)[-1],
                             content_disposition_type="inline")
+
+    # --- Compétitions ajoutées à la main ---------------------------------------------------
+
+    def manuelle_ou_404(id_: str, s: Service) -> CompetitionManuelle:
+        m = s.manuelles.get(id_)
+        if not m:
+            raise HTTPException(404, "Compétition ajoutée à la main introuvable")
+        return m
+
+    @app.get("/manuelles", response_model=list[CompetitionManuelle], tags=["Compétitions ajoutées à la main"], dependencies=[Depends(admin)])
+    async def manuelles_liste(s: Service = Depends(service)):
+        """Compétitions saisies par le club (les passées comprises)."""
+        return s.manuelles.liste()
+
+    @app.get("/manuelles/modele.csv", tags=["Compétitions ajoutées à la main"], response_class=Response)
+    async def manuelles_modele():
+        """Modèle CSV pour l'import (séparateur « ; », dates JJ/MM/AAAA, oui / non)."""
+        return Response(
+            manuelles.modele_csv(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="competitions-modele.csv"'},
+        )
+
+    @app.post("/manuelles", response_model=CompetitionManuelle, status_code=201, tags=["Compétitions ajoutées à la main"], dependencies=[Depends(admin)])
+    async def manuelles_ajouter(saisie: SaisieManuelle, s: Service = Depends(service)):
+        """Ajoute une compétition (en-tête Authorization: Bearer <CAL_ADMIN_TOKEN>)."""
+        return s.manuelles.ajouter([saisie])[0]
+
+    @app.post("/manuelles/import", tags=["Compétitions ajoutées à la main"], dependencies=[Depends(admin)])
+    async def manuelles_import(
+        fichier: UploadFile = File(..., description="Fichier CSV (voir /manuelles/modele.csv)"),
+        essai: bool = Form(False, description="Vérifier seulement, sans rien ajouter"),
+        s: Service = Depends(service),
+    ):
+        """Ajoute toutes les compétitions d'un CSV. Une seule ligne en erreur : rien n'est ajouté (422, lignes en cause)."""
+        contenu = await fichier.read(manuelles.TAILLE_MAX_CSV + 1)
+        try:
+            saisies, erreurs = manuelles.lire_csv(contenu)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        if erreurs:
+            raise HTTPException(422, f"{len(erreurs)} ligne(s) en erreur, rien n'a été ajouté :\n" + "\n".join(erreurs))
+        if not saisies:
+            raise HTTPException(422, "Aucune compétition dans le fichier")
+        ajoutees = saisies if essai else s.manuelles.ajouter(saisies)
+        return {"essai": essai, "nb": len(ajoutees), "competitions": [c.model_dump(mode="json") for c in ajoutees]}
+
+    @app.put("/manuelles/{id_}", response_model=CompetitionManuelle, tags=["Compétitions ajoutées à la main"], dependencies=[Depends(admin)])
+    async def manuelles_modifier(id_: str, saisie: SaisieManuelle, s: Service = Depends(service)):
+        manuelle_ou_404(id_, s)
+        return s.manuelles.modifier(id_, saisie)
+
+    @app.delete("/manuelles/{id_}", tags=["Compétitions ajoutées à la main"], dependencies=[Depends(admin)])
+    async def manuelles_supprimer(id_: str, s: Service = Depends(service)):
+        manuelle_ou_404(id_, s)
+        s.manuelles.supprimer(id_)
+        return {"supprimee": id_}
 
     return app
 

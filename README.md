@@ -73,11 +73,35 @@ curl -X POST -H "Authorization: Bearer $JETON" -F "lien=https://…/Fleuret.pdf"
 curl -X DELETE -H "Authorization: Bearer $JETON" https://calendrier-ffe.benribs.fr/calendriers/idf/cibles/fleuret
 ```
 
+### Compétitions ajoutées à la main
+
+Source `manuel` : compétitions saisies par le club (plugin WordPress, page « Compétitions ajoutées »), une par une ou
+par import CSV. Enregistrées dans `data/manuelles.json`. Toujours incluses quand `source` n'est pas précisé.
+
+| Route | Rôle |
+|---|---|
+| `GET /manuelles` | Liste (jeton requis) |
+| `POST /manuelles` | Ajoute une compétition, JSON (jeton requis) |
+| `PUT /manuelles/{id}` | Modifie (jeton requis) |
+| `DELETE /manuelles/{id}` | Supprime (jeton requis) |
+| `POST /manuelles/import` | Import CSV, champ `fichier` ; `essai=true` vérifie sans ajouter. Une ligne en erreur : rien n'est ajouté (jeton requis) |
+| `GET /manuelles/modele.csv` | Modèle CSV |
+
+Champs : `titre`, `lieu`, `date_debut` et `categories` obligatoires ; `date_fin` (défaut : le jour même), `armes`
+(vide : toutes les armes), `document_url`, `document_nom`, `preinscription` (défaut vrai), `delai_inscription_jours`
+(hors délai à partir de N jours avant le début, à midi), `inscription_sur_place`, `liee_ffe`, `remarque`.
+
+- Compétitions officielles pour le filtre `officielle`.
+- `liee_ffe` : quand la compétition apparaît sur le site fédéral (dates qui se chevauchent, même lieu, même arme, une
+  catégorie en commun), la fiche FFE la remplace et reçoit les informations du club (remarque, document, préinscription).
+- CSV : séparateur `;` ou `,`, UTF-8 ou Windows-1252, dates `JJ/MM/AAAA`, armes `Fleuret, Épée` ou `FLE,EPE`,
+  catégories `M11, M13` ou `M13 à M17`, booléens `oui` / `non`.
+
 Filtres (tous facultatifs, listes séparées par des virgules) :
 
 | Paramètre | Exemple | Remarque |
 |---|---|---|
-| `source` | `ffe,cde91,idf` | par défaut `CAL_DEFAULT_SOURCES` |
+| `source` | `ffe,cde91,idf,manuel` | par défaut `CAL_DEFAULT_SOURCES` (les compétitions ajoutées à la main sont toujours incluses) |
 | `arme` | `FLE,EPE` | FLE, EPE, SAB, LAS, ART |
 | `categorie` | `M13,M15` | M5 … M20, SENIOR, V1 … V4 |
 | `departement` | `91,78` | codes INSEE |

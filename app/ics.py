@@ -48,6 +48,10 @@ def generer(competitions: list[Competition], nom: str, domaine: str) -> str:
         description = [f"Lieu : {c.lieu}", f"Catégories : {c.categories_libelle or ', '.join(c.categories)}"]
         if c.horaire:
             description.append(f"Horaire : {c.horaire}")
+        if c.remarque:
+            description.append(f"Remarque : {c.remarque}")
+        if c.inscription_sur_place:
+            description.append("Inscription sur place possible")
         if c.note_url:
             description.append(f"Note d'organisation : {c.note_url}")
         if c.url:
