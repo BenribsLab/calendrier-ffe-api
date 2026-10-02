@@ -3,8 +3,13 @@
 Un calendrier par arme (« Calendrier IDF Fleuret 26-27 », « Calendrier IDF Epée 26-27 », « Calendrier IDF Sabre 26-27 »)
 et des calendriers M13 (« Calendrier IDF M13 Fleuret 26-27 », « … M13 Epée … »), chacun derrière un lien de la page.
 L'arme (et M13) est lue dans le libellé du lien : c'est ce qui fait foi. Le fichier est un export PDF d'un classeur
-Excel (« .xlsx.pdf ») dont le nom change à chaque version ; un même fichier peut contenir plusieurs pages (une par
-arme) : pour un lien donné, on ne lit que la page de son arme, et pour un calendrier M13 que la colonne M13.
+Excel (« .xlsx.pdf ») dont le nom change à chaque version. Deux présentations possibles :
+- un fichier par arme ;
+- un fichier commun aux trois armes (début de saison 2026-2027 : les trois liens pointent vers le même fichier, une
+  page par arme, titrée « Calendrier 2026/2027 - EPEE », « … - FLEURET », « … - SABRE »).
+Pour un lien donné, on ne lit que la page de son arme (titre de la page), et pour un calendrier M13 que la colonne M13.
+Si aucune page n'indique d'arme, on se fie au libellé du lien. Si le fichier ne contient que d'autres armes, le lien
+est ignoré (avertissement) : on ne range jamais une compétition d'épée dans le fleuret.
 Chaque page est une grille : lignes = week-ends (« 5-6 », « 31-1 », « 6-7-8-9 »), colonnes = catégories
 (Vétérans, Seniors Dames, Seniors Hommes, M20 … M13), mois écrits à la verticale (donc à l'envers
 dans le texte extrait : « erbotcO »). Le mot « V A C A N C E S » est incrusté sur les week-ends de vacances.
@@ -21,10 +26,10 @@ from urllib.parse import urljoin
 import pdfplumber
 from selectolax.parser import HTMLParser
 
-from .calendriers import Cible, Document, Evenement, dedoublonner, saison_en_cours, slug
+from .calendriers import Cible, Document, DocumentIgnore, Evenement, dedoublonner, saison_en_cours, slug
 from .securite import lien_web
 from .cde91 import armes as armes_du_texte
-from .models import CATEGORIES
+from .models import ARMES, CATEGORIES
 from .text import categories as extraire_categories
 from .text import espaces, mois, sans_accents
 
@@ -32,7 +37,7 @@ log = logging.getLogger(__name__)
 
 NOM = "idf"
 LIBELLE = "Calendrier Ligue IDF"
-VERSION_ANALYSE = 3  # à incrémenter à chaque changement de l'analyse
+VERSION_ANALYSE = 4  # à incrémenter à chaque changement de l'analyse
 
 
 def est_m13(libelle: str) -> bool:
@@ -273,8 +278,9 @@ def textes_par_colonne(page, rangee, colonnes_x: dict[int, tuple[float, float]])
     return {j: "\n".join(t for _, t in sorted(morceaux)) for j, morceaux in par_colonne.items()}
 
 
-def analyser_page(page, pdf_url: str, saison_defaut: tuple[int, int]) -> list[Evenement]:
+def analyser_page(page, pdf_url: str, saison_defaut: tuple[int, int], armes_imposees: list[str] | None = None) -> list[Evenement]:
     armes, titre_page = arme_de_la_page(page)
+    armes = armes or armes_imposees or []
     saison = _saison(titre_page) or saison_defaut
     tables = page.find_tables()
     if not tables or not armes:
@@ -350,16 +356,25 @@ def analyser_pdf(contenu: bytes, document: Document) -> list[Evenement]:
     m13 = est_m13(document.libelle)
     evenements: list[Evenement] = []
     with pdfplumber.open(io.BytesIO(contenu)) as pdf:
-        for page in pdf.pages:
-            armes_page, _ = arme_de_la_page(page)
-            if arme_du_lien and armes_page != arme_du_lien:
-                continue  # page d'une autre arme
-            for e in analyser_page(page, document.url, saison_en_cours()):
+        pages = [(page, arme_de_la_page(page)[0]) for page in pdf.pages]
+        armes_du_fichier = [a for _, armes in pages for a in armes]
+        if arme_du_lien and not armes_du_fichier:
+            # Aucune page n'annonce son arme (fichier propre à une arme, titre sans l'arme) : le lien fait foi
+            a_lire = [(page, arme_du_lien) for page, _ in pages]
+        else:
+            # Fichier commun aux trois armes ou fichier d'une arme : seulement la ou les pages de l'arme du lien
+            a_lire = [(page, armes) for page, armes in pages if not arme_du_lien or armes == arme_du_lien]
+        if arme_du_lien and not a_lire:
+            trouvees = ", ".join(ARMES.get(a, a) for a in dict.fromkeys(armes_du_fichier))
+            raise DocumentIgnore(
+                f"« {document.libelle} » : le fichier ne contient pas le calendrier "
+                f"{', '.join(ARMES.get(a, a) for a in arme_du_lien)} (calendrier(s) trouvé(s) : {trouvees}). Lien ignoré."
+            )
+        for page, armes in a_lire:
+            for e in analyser_page(page, document.url, saison_en_cours(), armes):
                 if m13:
                     if "M13" not in e.categories:
                         continue
                     e.categories, e.categories_libelle = ["M13"], "M13"
                 evenements.append(e)
-    if arme_du_lien and not evenements:
-        log.warning("Aucune page %s trouvée dans %s (%s)", arme_du_lien, document.url, document.libelle)
     return dedoublonner(evenements)

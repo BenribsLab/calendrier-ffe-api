@@ -32,6 +32,11 @@ log = logging.getLogger(__name__)
 LIEU_INDETERMINE = "Lieu indéterminé"
 
 
+class DocumentIgnore(ValueError):
+    """Le fichier d'un lien ne contient pas ce que son libellé annonce (ex. lien « Fleuret » vers un calendrier
+    épée) : ce lien est ignoré, avec un avertissement, sans bloquer les autres liens."""
+
+
 @dataclass(frozen=True)
 class Document:
     url: str  # adresse du calendrier (site, lien web, ou fichier déposé servi par l'API)
@@ -194,8 +199,21 @@ class CalendrierPDF:
         evenements = []
         for info in pdfs:
             contenu = (self.dossier / "pdf" / info["fichier"]).read_bytes()
-            evenements.extend(self.analyser(contenu, Document(info["url"], info.get("libelle", ""))))
+            evenements.extend(self._analyser_document(contenu, Document(info["url"], info.get("libelle", "")), info))
         return dedoublonner(evenements)
+
+    def _analyser_document(self, contenu: bytes, doc: Document, info: dict) -> list[Evenement]:
+        """Analyse d'un lien ; s'il ne contient pas ce qu'il annonce, avertissement dans `info` et aucun événement."""
+        info.pop("avertissement", None)
+        try:
+            evs = self.analyser(contenu, doc)
+        except DocumentIgnore as exc:
+            log.warning("%s : %s", self.libelle, exc)
+            info["avertissement"] = str(exc)
+            return []
+        if not evs:
+            info["avertissement"] = "Aucune compétition reconnue dans ce fichier pour ce lien"
+        return evs
 
     def _reanalyser_archives(self, etat: Etat) -> None:
         """Nouvelle version de l'analyse : on relit tout de suite les PDF archivés, sans attendre le réseau."""
@@ -314,7 +332,7 @@ class CalendrierPDF:
                 utilise = [{"url": self._document_manuel(code).url, "nom": m["nom"]}]
             else:
                 utilise = [
-                    {"url": p["url"], "nom": p.get("libelle") or Path(p["url"]).name}
+                    {"url": p["url"], "nom": p.get("libelle") or Path(p["url"]).name, "avertissement": p.get("avertissement")}
                     for p in self.etat.pdfs
                     if p.get("mode", "site") == "site" and cible.remplace(Document(p["url"], p.get("libelle", "")))
                 ]
@@ -362,7 +380,7 @@ class CalendrierPDF:
             for (doc, _), info in zip(documents, pdfs):
                 contenu = contenus[doc.url]
                 fichier = doc.fichier or self._archiver(contenu, doc.url)[1]  # fichier déposé : déjà archivé
-                evs = self.analyser(contenu, doc)
+                evs = self._analyser_document(contenu, doc, info)
                 info.update(fichier=fichier, analyse_le=maintenant, nb_evenements=len(evs))
                 evenements.extend(evs)
 

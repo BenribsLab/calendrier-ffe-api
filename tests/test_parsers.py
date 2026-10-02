@@ -366,3 +366,30 @@ def test_eclater_par_arme():
     assert separer_id("ffe-abc.FLE") == ("ffe-abc", "FLE")
     assert separer_id("ffe-abc") == ("ffe-abc", None)
     assert separer_id("ffe-ab_c~~") == ("ffe-ab_c~~", None)
+
+
+def _page_seule(numero):
+    """Fichier d'une seule page du calendrier commun (fichier séparé par arme)."""
+    import io
+    import pypdfium2 as pdfium
+    source = pdfium.PdfDocument((FIXTURES / "idf_calendrier.pdf").read_bytes())
+    nouveau = pdfium.PdfDocument.new()
+    nouveau.import_pages(source, [numero])
+    sortie = io.BytesIO()
+    nouveau.save(sortie)
+    return sortie.getvalue()
+
+
+def test_idf_fichier_commun_ou_separe():
+    # Fichier commun (3 pages : épée, fleuret, sabre) et fichiers séparés : mêmes compétitions pour chaque arme
+    for numero, arme, libelle in ((0, "EPE", "Epée"), (1, "FLE", "Fleuret"), (2, "SAB", "Sabre")):
+        commun = _calendrier(f"Calendrier IDF {libelle} 26-27")
+        separe = idf.analyser_pdf(_page_seule(numero), calendriers.Document("https://idf/x.pdf", f"Calendrier IDF {libelle} 26-27"))
+        assert [(e.id, e.categories) for e in separe] == [(e.id, e.categories) for e in commun]
+        assert {a for e in separe for a in e.armes} == {arme}
+
+
+def test_idf_lien_vers_une_autre_arme_ignore():
+    # Lien « Fleuret » vers un fichier qui ne contient que l'épée : ignoré, jamais d'épée rangée en fleuret
+    with pytest.raises(calendriers.DocumentIgnore, match="Fleuret.*Épée"):
+        idf.analyser_pdf(_page_seule(0), calendriers.Document("https://idf/x.pdf", "Calendrier IDF Fleuret 26-27"))
