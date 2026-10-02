@@ -31,6 +31,14 @@ LIBELLES = {"ffe": "Calendrier FFE", "cde91": "Calendrier CDE 91", "idf": "Calen
 _DEPARTEMENTS_TITRE = re.compile(r"(?:\s-\s*|\()\s*(\d{2,3}[AB]?(?:\s*-\s*\d{2,3}[AB]?)*)\s*\)?\s*$", re.IGNORECASE)
 
 
+# Fiches que la fédération marque elle-même comme à ignorer (titre « NE PAS UTILISER »)
+_A_IGNORER = re.compile(r"\bNE\s+PAS\s+UTILISER\b")
+
+
+def a_ignorer(titre: str) -> bool:
+    return bool(_A_IGNORER.search(sans_accents(titre or "").upper()))
+
+
 def departements_du_titre(titre: str) -> list[str]:
     m = _DEPARTEMENTS_TITRE.search(titre)
     return re.findall(r"\d{2,3}[AB]?", m.group(1).upper()) if m else []
@@ -268,7 +276,7 @@ class Service:
             cle = "&".join(f"{k}={v}" for k, v in r.parametres_ffe())
             try:
                 res = await self.cache_liste.obtenir(cle, lambda: self.ffe.liste(r))
-                competitions += [c for l in res.valeur for c in eclater(self._depuis_ffe(l))]
+                competitions += [c for l in res.valeur if not a_ignorer(l.titre) for c in eclater(self._depuis_ffe(l))]
                 statuts["ffe"] = SourceStatus(
                     ok=not res.perime,
                     fetched_at=datetime.fromtimestamp(res.stocke_a, timezone.utc),
@@ -307,7 +315,7 @@ class Service:
             await self._geolocaliser(nouvelles)
             competitions += nouvelles
 
-        competitions = [c for c in competitions if self._garder(c, r)]
+        competitions = [c for c in competitions if not a_ignorer(c.titre) and self._garder(c, r)]
         for c in competitions:
             c.officielle = self.est_officielle(c)
         if r.officielle:
@@ -424,6 +432,8 @@ class Service:
         fiche = await self.fiche_ffe(base)
         if not fiche.date_debut or not (fiche.titre or fiche.lieu):
             return None  # la FFE renvoie une fiche vide (HTTP 200) pour un identifiant inconnu
+        if a_ignorer(fiche.titre):
+            return None
         if arme and arme not in fiche.armes:
             return None
         c = Competition(

@@ -393,3 +393,15 @@ def test_idf_lien_vers_une_autre_arme_ignore():
     # Lien « Fleuret » vers un fichier qui ne contient que l'épée : ignoré, jamais d'épée rangée en fleuret
     with pytest.raises(calendriers.DocumentIgnore, match="Fleuret.*Épée"):
         idf.analyser_pdf(_page_seule(0), calendriers.Document("https://idf/x.pdf", "Calendrier IDF Fleuret 26-27"))
+
+
+@pytest.mark.parametrize("titre,attendu", [
+    ("NE PAS UTILISER", True),
+    ("Ne pas utiliser - test", True),
+    ("Épreuve à ne  pas utiliser", True),
+    ("Tournoi de Noël", False),
+    ("UTILISER le gymnase", False),
+])
+def test_titre_a_ignorer(titre, attendu):
+    from app.service import a_ignorer
+    assert a_ignorer(titre) is attendu
