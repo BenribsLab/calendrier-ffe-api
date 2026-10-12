@@ -11,7 +11,7 @@ from datetime import date
 from urllib.parse import urljoin
 
 import pdfplumber
-from selectolax.parser import HTMLParser
+from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
 from .calendriers import Cible, Document, Evenement, dedoublonner, saison_en_cours, slug
 from .securite import lien_web

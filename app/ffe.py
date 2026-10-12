@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 from datetime import date
 
 import httpx
-from selectolax.parser import HTMLParser, Node
+from selectolax.lexbor import LexborHTMLParser as HTMLParser
+from selectolax.lexbor import LexborNode as Node
 
 from .securite import lien_web
 from .text import categories as extraire_categories
