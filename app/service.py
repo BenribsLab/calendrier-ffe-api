@@ -6,16 +6,18 @@ compétition par arme (identifiant suffixé « .EPE », « .FLE »…). Chaque a
 officielle indépendamment (le calendrier épée de la Ligue ne rend pas officiel le fleuret d'une même fiche FFE).
 """
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from . import idf, manuelles
 from .cache import CacheTTL
 from .calendriers import LIEU_INDETERMINE, CalendrierPDF, Evenement, lieu_connu, meme_evenement, meme_lieu
 from .config import Settings
 from .ffe import ClientFFE, FicheFFE, Filtres, LigneFFE, jeton_depuis_id, type_et_echelon
+from .securite import TAILLE_MAX_PDF, telecharger
 from .geo import Geolocalisation, distance_km
 from .manuelles import CompetitionManuelle, Manuelles
 from .models import ARMES, Competition, CompetitionDetail, CompetitionList, LienCalendrier, PointDepart, SourceStatus
@@ -118,6 +120,7 @@ class Service:
         self.cache_liste = CacheTTL(settings.ffe_list_ttl, settings.ffe_stale_max)
         self.cache_fiche = CacheTTL(settings.ffe_detail_ttl, settings.ffe_stale_max, max_entrees=2000)
         self.cache_referentiel = CacheTTL(86400, 7 * 86400)
+        self.cache_empreintes = CacheTTL(12 * 3600, 3 * 86400, max_entrees=2000)
 
     def url_note(self, id_: str) -> str:
         return f"{self.settings.public_url.rstrip('/')}/competitions/{id_}/note"
@@ -461,6 +464,89 @@ class Service:
             self._fusionner_manuelle(c, m)
         c.officielle = self.est_officielle(c)
         return CompetitionDetail(**c.model_dump(), note_organisation=fiche.note_organisation, site_web=fiche.site_web)
+
+    # --- Suivi d'une compétition dont l'identifiant a pu changer -----------------------
+
+    JOURS_RETROUVER = 21
+
+    @staticmethod
+    def _meme_titre(a: str, b: str) -> bool:
+        def cle(t: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", sans_accents(t or "").lower())
+
+        return bool(cle(a)) and cle(a) == cle(b)
+
+    async def retrouver(
+        self, id_: str, titre: str, lieu: str, date_debut: date, arme: str | None, categories: list[str]
+    ) -> tuple[CompetitionDetail | None, int]:
+        """La compétition d'aujourd'hui qui correspond à une compétition enregistrée (préinscription) : son identifiant
+        change avec sa date ou son lieu (FFE : dates et ville dans l'identifiant ; CDE / Ligue : date, titre, lieu),
+        ou quand elle apparaît sur le site fédéral (« cde91-… » devient « ffe-… »).
+        Même identifiant, sinon : même arme ET mêmes catégories, date à ± 3 semaines, même lieu OU même titre.
+        Retourne (compétition, nombre de candidates) ; None si aucune, ou plusieurs sans pouvoir trancher."""
+        r = Recherche(
+            sources=list(SOURCES),
+            armes=[arme] if arme else [],
+            date_debut=date_debut - timedelta(days=self.JOURS_RETROUVER),
+            date_fin=date_debut + timedelta(days=self.JOURS_RETROUVER),
+        )
+        competitions = (await self.rechercher(r)).competitions
+        exactes = [c for c in competitions if c.id == id_]
+        if exactes:
+            candidates = exactes
+        else:
+            voulues = set(categories)
+            candidates = [
+                c for c in competitions
+                if (not arme or not c.armes or arme in c.armes)
+                and (not voulues or set(c.categories) == voulues)
+                and ((lieu_connu(lieu) and lieu_connu(c.lieu) and meme_lieu(lieu, c.lieu)) or self._meme_titre(titre, c.titre))
+            ]
+            if len(candidates) > 1:  # plusieurs : celle qui a le même lieu ET le même titre
+                les_deux = [c for c in candidates if lieu_connu(c.lieu) and meme_lieu(lieu, c.lieu) and self._meme_titre(titre, c.titre)]
+                if len(les_deux) == 1:
+                    candidates = les_deux
+        if len(candidates) != 1:
+            return None, len(candidates)
+        trouvee = candidates[0]
+        try:
+            detail = await self.detail(trouvee.id)  # note d'organisation (fiche FFE)
+        except Exception:
+            log.warning("Détail indisponible pour %s", trouvee.id)
+            detail = None
+        if detail is None:
+            detail = CompetitionDetail(**trouvee.model_dump())
+        # Le détail ne connaît pas les rapprochements faits dans la liste (calendriers sans lieu) : on les garde
+        detail.sources = sorted(set(detail.sources) | set(trouvee.sources), key=SOURCES.index)
+        return detail, 1
+
+    @staticmethod
+    def note_de(c: Competition) -> str | None:
+        """Note d'organisation : PDF de la FFE, ou document joint à une compétition ajoutée à la main
+        (pas les calendriers PDF du CDE ou de la Ligue, qui changent pour bien d'autres compétitions)."""
+        note = getattr(c, "note_organisation", None)
+        if note:
+            return note
+        return next((l.url for l in c.calendriers if l.source == manuelles.NOM), None)
+
+    async def empreinte(self, url: str) -> dict | None:
+        """Empreinte du contenu (SHA-256), poids, Last-Modified et ETag d'un document : le moindre changement du
+        fichier change l'empreinte. Mise en cache 12 h par adresse."""
+        async def charger():
+            r = await telecharger(self.ffe.http, url, TAILLE_MAX_PDF)
+            return {
+                "url": url,
+                "sha256": hashlib.sha256(r.content).hexdigest(),
+                "taille": len(r.content),
+                "modifie_le": r.headers.get("last-modified"),
+                "etag": r.headers.get("etag"),
+            }
+
+        try:
+            return (await self.cache_empreintes.obtenir(url, charger)).valeur
+        except Exception as exc:
+            log.warning("Empreinte impossible pour %s : %s", url, exc)
+            return None
 
     async def referentiel(self) -> dict:
         async def charger():

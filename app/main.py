@@ -223,6 +223,37 @@ def creer_app(
             headers={"Content-Disposition": 'inline; filename="competitions.ics"', "Cache-Control": "public, max-age=300"},
         )
 
+    @app.get("/competitions/retrouver", tags=["Compétitions"])
+    async def competition_retrouver(
+        id: str = Query("", max_length=400, description="Identifiant enregistré (peut avoir changé)"),
+        titre: str = Query("", max_length=200),
+        lieu: str = Query("", max_length=120),
+        date_debut: date = Query(..., description="Date enregistrée, AAAA-MM-JJ"),
+        arme: str | None = Query(None, max_length=3, description="FLE, EPE, SAB…"),
+        categories: str | None = Query(None, max_length=80, description="Catégories enregistrées, ex. M11,M13"),
+        s: Service = Depends(service),
+    ):
+        """Retrouve une compétition dont l'identifiant a pu changer (date, lieu, apparition sur le site fédéral) :
+        même identifiant, sinon même arme ET mêmes catégories, date à ± 3 semaines, même lieu ou même titre.
+        `competition` vaut null si aucune ne correspond, ou si plusieurs correspondent (`candidates` > 1).
+        `note` : note d'organisation (FFE, ou document d'une compétition ajoutée à la main) avec l'empreinte de son
+        contenu (sha256, taille, Last-Modified, ETag) pour savoir si elle a été modifiée."""
+        arme = arme.upper() if arme else None
+        if arme and arme not in ARMES:
+            raise HTTPException(422, f"Arme inconnue. Codes valides : {', '.join(ARMES)}")
+        cats = liste_parametre(categories)
+        if set(cats) - set(CATEGORIES):
+            raise HTTPException(422, f"Catégorie(s) inconnue(s). Codes valides : {', '.join(CATEGORIES)}")
+        trouvee, nb = await s.retrouver(id, titre, lieu, date_debut, arme, cats)
+        note = s.note_de(trouvee) if trouvee else None
+        return {
+            "competition": trouvee.model_dump(mode="json") if trouvee else None,
+            "candidates": nb,
+            "meme_id": bool(trouvee and trouvee.id == id),
+            # Note d'organisation et son empreinte (null si pas de note, ou fichier injoignable)
+            "note": {"url": note, "empreinte": await s.empreinte(note)} if note else None,
+        }
+
     @app.get("/competitions/{id_}", response_model=CompetitionDetail, tags=["Compétitions"])
     async def competition(id_: str, s: Service = Depends(service)):
         """Détail d'une compétition, avec le lien direct de la note d'organisation si elle est publiée."""

@@ -481,3 +481,50 @@ def test_manuelle_remarque_ancienne_corrigee(tmp_path):
     m = Manuelles(tmp_path)
     assert m.get("manuel-2026-12-01-a-massy-abc123").remarque == "Ligne 1\nLigne 2"
     assert json.loads((tmp_path / "manuelles.json").read_text(encoding="utf-8"))[0]["remarque"] == "Ligne 1\nLigne 2"
+
+
+
+# --- Retrouver une compétition dont l'identifiant a changé ------------------------------------------
+
+
+def test_retrouver_par_identifiant_et_par_ressemblance(client):
+    m = client.post("/manuelles", json=_manuelle(armes=["EPE"], categories=["M13"]), headers=ADMIN).json()
+    base = {"titre": "Stage de Toussaint", "lieu": "Massy", "date_debut": "2026-10-26", "arme": "EPE", "categories": "M13"}
+    # Même identifiant
+    r = client.get("/competitions/retrouver", params={**base, "id": m["id"] + ".EPE"}).json()
+    assert r["competition"]["id"] == m["id"] + ".EPE" or r["competition"]["id"] == m["id"]
+    # Date déplacée de 10 jours : l'identifiant a changé, la compétition est retrouvée (même titre, même lieu)
+    client.put(f"/manuelles/{m['id']}", json=_manuelle(armes=["EPE"], categories=["M13"], date_debut="2026-11-05"), headers=ADMIN)
+    r = client.get("/competitions/retrouver", params={**base, "id": "ancien-identifiant"}).json()
+    assert r["competition"] and r["competition"]["date_debut"] == "2026-11-05" and not r["meme_id"]
+    # Autre catégorie, autre arme, ou trop loin : ce n'est pas la même compétition
+    assert client.get("/competitions/retrouver", params={**base, "id": "x", "categories": "M15"}).json()["competition"] is None
+    assert client.get("/competitions/retrouver", params={**base, "id": "x", "arme": "FLE"}).json()["competition"] is None
+    assert client.get("/competitions/retrouver", params={**base, "id": "x", "date_debut": "2026-09-20"}).json()["competition"] is None
+    # Lieu changé mais même titre : retrouvée ; titre et lieu différents : non
+    client.put(f"/manuelles/{m['id']}", json=_manuelle(armes=["EPE"], categories=["M13"], lieu="Étampes"), headers=ADMIN)
+    assert client.get("/competitions/retrouver", params={**base, "id": "x"}).json()["competition"]["lieu"] == "Étampes"
+    assert client.get("/competitions/retrouver", params={**base, "id": "x", "titre": "Autre chose"}).json()["competition"] is None
+
+
+def test_retrouver_plusieurs_candidates(client):
+    for lieu in ("Massy", "Étampes"):
+        client.post("/manuelles", json=_manuelle(armes=["EPE"], categories=["M13"], lieu=lieu), headers=ADMIN)
+    base = {"id": "x", "titre": "Stage de Toussaint", "lieu": "Savigny-sur-Orge", "date_debut": "2026-10-26", "arme": "EPE", "categories": "M13"}
+    r = client.get("/competitions/retrouver", params=base).json()
+    assert r["competition"] is None and r["candidates"] == 2  # même titre, deux lieux : on ne devine pas
+    r = client.get("/competitions/retrouver", params={**base, "lieu": "Massy"}).json()
+    assert r["competition"]["lieu"] == "Massy"  # même titre ET même lieu : tranché
+
+
+def test_retrouver_empreinte_de_la_note(client):
+    # Document d'une compétition ajoutée à la main : empreinte du contenu (le faux réseau sert un PDF pour exemple.fr)
+    m = client.post("/manuelles", json=_manuelle(armes=["EPE"], categories=["M13"], document_url="https://exemple.fr/note.pdf"), headers=ADMIN).json()
+    r = client.get("/competitions/retrouver", params={"id": m["id"], "titre": "Stage de Toussaint", "lieu": "Massy", "date_debut": "2026-10-26", "arme": "EPE", "categories": "M13"}).json()
+    assert r["note"]["url"] == "https://exemple.fr/note.pdf"
+    e = r["note"]["empreinte"]
+    assert len(e["sha256"]) == 64 and e["taille"] > 1000
+    # Pas de document : pas de note
+    client.put(f"/manuelles/{m['id']}", json=_manuelle(armes=["EPE"], categories=["M13"]), headers=ADMIN)
+    r = client.get("/competitions/retrouver", params={"id": m["id"], "titre": "Stage de Toussaint", "lieu": "Massy", "date_debut": "2026-10-26", "arme": "EPE", "categories": "M13"}).json()
+    assert r["note"] is None

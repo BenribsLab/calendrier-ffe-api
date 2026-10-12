@@ -92,10 +92,11 @@ async def telecharger(http: httpx.AsyncClient, url: str, limite: int) -> httpx.R
             if total > limite:
                 raise ValueError(f"Fichier trop volumineux (maximum {limite // 1024 // 1024} Mo)")
             morceaux.append(morceau)
-    # Contenu déjà décompressé : on ne garde que le type (pour l'encodage du texte), pas Content-Encoding
+    # Contenu déjà décompressé : on ne garde que le type (pour l'encodage du texte) et la version du fichier
+    # (Last-Modified, ETag), pas Content-Encoding
     return httpx.Response(
         r.status_code,
-        headers={"content-type": r.headers.get("content-type", "")},
+        headers={k: r.headers[k] for k in ("content-type", "last-modified", "etag") if k in r.headers},
         content=b"".join(morceaux),
         request=r.request,
     )
