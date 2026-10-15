@@ -85,5 +85,5 @@ class CompetitionList(BaseModel):
     generated_at: datetime
     sources: dict[str, SourceStatus]
     depart: PointDepart | None = Field(None, description="Point de départ du filtre de distance")
-    sans_position: int = Field(0, description="Compétitions écartées par le filtre de distance faute de lieu connu")
+    sans_position: int = Field(0, description="Compétitions sans lieu connu (filtre de distance) : écartées, ou gardées avec sans_lieu=true")
     competitions: list[Competition]

@@ -528,3 +528,14 @@ def test_retrouver_empreinte_de_la_note(client):
     client.put(f"/manuelles/{m['id']}", json=_manuelle(armes=["EPE"], categories=["M13"]), headers=ADMIN)
     r = client.get("/competitions/retrouver", params={"id": m["id"], "titre": "Stage de Toussaint", "lieu": "Massy", "date_debut": "2026-10-26", "arme": "EPE", "categories": "M13"}).json()
     assert r["note"] is None
+
+
+
+def test_distance_garder_les_competitions_sans_lieu(client):
+    base = {"pres_de": "Savigny-sur-Orge", "rayon": 10}
+    sans = client.get("/competitions", params=base).json()
+    avec = client.get("/competitions", params={**base, "sans_lieu": "true"}).json()
+    assert sans["sans_position"] > 0 and avec["sans_position"] == sans["sans_position"]
+    sans_distance = [c for c in avec["competitions"] if c["distance_km"] is None]
+    assert len(sans_distance) == sans["sans_position"] and avec["count"] == sans["count"] + sans["sans_position"]
+    assert all(c["distance_km"] is not None for c in sans["competitions"])

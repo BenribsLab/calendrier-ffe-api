@@ -105,6 +105,7 @@ class Recherche(Filtres):
     regions: list[str] = field(default_factory=list)  # codes INSEE
     officielle: bool = False
     depart: PointDepart | None = None  # filtre de distance : point de départ et rayon (km)
+    sans_lieu: bool = False  # filtre de distance : garder aussi les compétitions sans lieu connu (distance inconnue)
 
 
 class Service:
@@ -335,7 +336,10 @@ class Service:
                     c.distance_km = round(distance_km(r.depart.latitude, r.depart.longitude, c.latitude, c.longitude), 1)
             if r.depart.rayon_km is not None:
                 sans_position = sum(1 for c in competitions if c.distance_km is None)
-                competitions = [c for c in competitions if c.distance_km is not None and c.distance_km <= r.depart.rayon_km]
+                competitions = [
+                    c for c in competitions
+                    if (c.distance_km is not None and c.distance_km <= r.depart.rayon_km) or (c.distance_km is None and r.sans_lieu)
+                ]
         competitions.sort(key=lambda c: (c.date_debut, c.date_fin, c.lieu, c.titre, c.armes))
         return CompetitionList(
             count=len(competitions),

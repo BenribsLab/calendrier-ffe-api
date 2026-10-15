@@ -153,6 +153,7 @@ def creer_app(
         lat: float | None = Query(None, ge=-90, le=90, description="…ou position de départ (latitude)"),
         lon: float | None = Query(None, ge=-180, le=180, description="…et longitude"),
         rayon: float | None = Query(None, gt=0, le=2000, description="Distance maximale en km, à vol d'oiseau"),
+        sans_lieu: bool = Query(False, description="Avec le filtre de distance : garder aussi les compétitions sans lieu connu"),
         s: Service = Depends(service),
     ) -> Recherche:
         sources = liste_parametre(source or settings.default_sources, majuscules=False)
@@ -197,6 +198,7 @@ def creer_app(
             regions=liste_parametre(region),
             officielle=officielle,
             depart=depart,
+            sans_lieu=sans_lieu,
         )
 
     @app.get("/health", include_in_schema=False)
