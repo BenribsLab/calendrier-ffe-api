@@ -122,6 +122,9 @@ def creer_app(
             LONGUEUR_MIN_JETON,
         )
     tentatives = LimiteTentatives()
+    # Communes de départ inconnues du cache : chacune coûte un appel à geo.api.gouv.fr et une entrée
+    # de cache. 40 par quart d'heure et par adresse : largement assez pour un visiteur, pas pour un robot.
+    geocodages = LimiteTentatives(maximum=40, fenetre=900)
 
     app.add_middleware(
         CORSMiddleware,
@@ -134,6 +137,7 @@ def creer_app(
         return request.app.state.service
 
     async def recherche(
+        request: Request,
         source: str | None = Query(None, max_length=40, description="ffe,cde91,idf,manuel"),
         arme: str | None = Query(None, max_length=40, description="Codes séparés par des virgules : " + ",".join(ARMES)),
         categorie: str | None = Query(None, max_length=80, description=",".join(CATEGORIES)),
@@ -176,6 +180,11 @@ def creer_app(
         if lat is not None:
             depart = PointDepart(latitude=lat, longitude=lon, rayon_km=rayon)
         elif pres_de and pres_de.strip():
+            if not s.geo.commune_en_cache(pres_de.strip()):
+                ip = request.client.host if request.client else "?"
+                if geocodages.bloquee(ip):
+                    raise HTTPException(429, "Trop de communes recherchées depuis cette adresse : réessayez dans 15 minutes")
+                geocodages.echec(ip)
             try:
                 commune = await s.geo.commune(pres_de.strip())
             except httpx.HTTPError as exc:

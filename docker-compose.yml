@@ -11,8 +11,8 @@ services:
       CAL_DATA_DIR: /data  # prioritaire sur .env
     ports:
       # Port et adresse d'écoute sur la machine hôte, réglables dans .env (API_PORT, API_BIND).
-      # Garder 127.0.0.1 en production : seul Apache (reverse proxy) doit joindre ce port. L'API fait confiance
-      # à l'en-tête X-Forwarded-For (adresse du visiteur) : ouvert au réseau, il pourrait être falsifié.
+      # Garder 127.0.0.1 en production : seul Apache (reverse proxy) doit joindre ce port. L'adresse du visiteur
+      # est la dernière ajoutée par Apache dans X-Forwarded-For (seuls les relais locaux sont crus, voir Dockerfile).
       - "${API_BIND:-127.0.0.1}:${API_PORT:-8765}:8765"
     volumes:
       - calendrier-data:/data  # cache des villes + historique des PDF du CDE 91 et de la Ligue

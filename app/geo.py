@@ -142,6 +142,10 @@ class Geolocalisation:
         self._cache[self._cle(ville, departement, region)] = _entree(choix)
         self._modifie = True
 
+    def commune_en_cache(self, nom: str) -> bool:
+        entree = self._cache.get(f"depart:{cle_ville(nom)}")
+        return bool(entree and entree.get("lat") is not None)
+
     async def commune(self, nom: str) -> dict | None:
         """Point de départ saisi à la main (« Savigny-sur-Orge », « savigny sur orge », « Massy ») :
         le nom exact s'il existe, sinon la commune la plus peuplée qui correspond. Mis en cache."""
